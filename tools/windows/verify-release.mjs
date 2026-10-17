@@ -44,21 +44,27 @@ try {
   assert.deepEqual(initial.sessions, [])
   assert.equal(initial.dir, path.join(dataDir, 'boardgame-hall', 'sessions'))
   const catalog = await api('/api/catalog')
-  const serialized = JSON.stringify(catalog)
-  for (const id of ['arkhamhorror', 'gobang', 'ox']) assert.ok(serialized.includes(id), id)
+  const editionFile = path.join(root, 'edition.json')
+  const games = fs.existsSync(editionFile) ? JSON.parse(fs.readFileSync(editionFile, 'utf8')).games : ['arkhamhorror', 'gobang', 'ox']
+  assert.deepEqual(catalog.games.map(game => game.id).sort(), [...games].sort())
   const config = await api('/api/config')
   assert.ok(!JSON.stringify(config).includes('"hasKey":true'))
   assert.equal((await fetch(base + '/')).status, 200)
-  await api('/api/mods/arkhamhorror/catalog/meta')
-  await api('/api/mods/arkhamhorror/catalog?limit=2')
-  const web = path.join(root, 'app/games/arkhamhorror/web')
-  for (const [folder, extension] of [['img', '.jpg'], ['audio', '.mp3']]) {
-    const resources = fs.readdirSync(path.join(web, folder), { recursive: true }).filter(name => name.endsWith(extension))
-    assert.ok(resources.length > 0)
-    const resource = (folder + '/' + resources[0]).replaceAll('\\', '/')
-    const response = await fetch(base + '/mods/arkhamhorror/' + resource)
-    assert.equal(response.status, 200, resource)
-    assert.equal((await response.arrayBuffer()).byteLength, fs.statSync(path.join(web, resource)).size)
+  const appDir = /^app=(.+)$/m.exec(fs.readFileSync(path.join(root, 'current.ini'), 'utf8'))?.[1]?.trim()
+  assert.ok(appDir && fs.existsSync(path.join(root, appDir, 'portable.mjs')), 'current.ini must point at the bundled app folder')
+  assert.deepEqual(fs.readdirSync(path.join(root, appDir, 'games')).sort(), [...games].sort())
+  if (games.includes('arkhamhorror')) {
+    await api('/api/mods/arkhamhorror/catalog/meta')
+    await api('/api/mods/arkhamhorror/catalog?limit=2')
+    const web = path.join(root, appDir, 'games/arkhamhorror/web')
+    for (const [folder, extension] of [['img', '.jpg'], ['audio', '.mp3']]) {
+      const resources = fs.readdirSync(path.join(web, folder), { recursive: true }).filter(name => name.endsWith(extension))
+      assert.ok(resources.length > 0)
+      const resource = (folder + '/' + resources[0]).replaceAll('\\', '/')
+      const response = await fetch(base + '/mods/arkhamhorror/' + resource)
+      assert.equal(response.status, 200, resource)
+      assert.equal((await response.arrayBuffer()).byteLength, fs.statSync(path.join(web, resource)).size)
+    }
   }
   const started = await api('/api/start', { modId: 'gobang', settings: { firstMove: 'player', opponents: ['__random__'] } })
   const sessionId = started.session.sessionId
@@ -69,7 +75,7 @@ try {
   assert.ok((await api('/api/sessions')).sessions.some(session => session.sessionId === sessionId))
   const restored = await api('/api/session?sessionId=' + encodeURIComponent(sessionId))
   assert.equal(restored.session.state.revision, moved.session.state.revision)
-  console.log('PASS: EXE startup; all 3 games; empty initial saves; isolated data; no personal model key; catalog; image/audio; play; save and restart restore.')
+  console.log('PASS: EXE startup; bundled games ' + games.join(', ') + '; empty initial saves; isolated data; no personal model key; catalog; image/audio; play; save and restart restore.')
 } finally {
   stop()
   // Keep verification data outside the deliverable; never touch existing user data.

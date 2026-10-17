@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { deflateRawSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
+import { zipDirectory } from '../lib/zip.js'
 
 const toolsDir = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.dirname(toolsDir)
@@ -19,7 +19,12 @@ const supportedArchitectures = archOption === 'all' ? ['arm64', 'x64'] : [archOp
 const stamp = formatStamp(new Date())
 const cardImagePattern = /^games\/arkhamhorror\/web\/img\/(zh\/)?cards\//
 const cardInventoryPattern = /^(zh\/)?cards\//
-let crcTable
+const rootPackage = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'))
+const hallVersion = rootPackage.version
+if (!/^\d+\.\d+\.\d+$/.test(hallVersion)) throw new Error('package.json 的 version 必须是 x.y.z。')
+// 版本化布局（见 lib/install.js）：app-<大厅版本>/ + runtime-<Node 版本>/ + current.ini。
+const appDirName = `app-${hallVersion}`
+const runtimeDirName = `runtime-${nodeVersion}`
 
 if (!supportedArchitectures.every(value => ['arm64', 'x64'].includes(value))) {
   throw new Error('--arch 只支持 arm64、x64 或 all。')
@@ -33,8 +38,8 @@ for (const arch of supportedArchitectures) await build(arch)
 async function build(arch) {
   const packageName = `BoardgameHall-macOS-${arch}-${stamp}`
   const releaseRoot = path.join(projectRoot, 'dist', packageName)
-  const appRoot = path.join(releaseRoot, 'app')
-  const runtimeRoot = path.join(releaseRoot, 'runtime')
+  const appRoot = path.join(releaseRoot, appDirName)
+  const runtimeRoot = path.join(releaseRoot, runtimeDirName)
   const zipPath = releaseRoot + '.zip'
   try {
     fs.mkdirSync(appRoot, { recursive: true })
@@ -44,7 +49,10 @@ async function build(arch) {
     writeLogicInventory(appRoot)
     fs.copyFileSync(path.join(projectRoot, 'server.js'), path.join(appRoot, 'server.js'))
     fs.copyFileSync(path.join(toolsDir, 'windows', 'portable.mjs'), path.join(appRoot, 'portable.mjs'))
-    fs.writeFileSync(path.join(appRoot, 'package.json'), '{"name":"dsh-boardgame-hall","version":"1.0.0","private":true,"type":"module"}')
+    fs.writeFileSync(path.join(appRoot, 'package.json'), JSON.stringify({
+      name: 'dsh-boardgame-hall', version: hallVersion, private: true, type: 'module', boardgame: rootPackage.boardgame,
+    }, null, 2))
+    fs.writeFileSync(path.join(releaseRoot, 'current.ini'), `app=${appDirName}\nruntime=${runtimeDirName}\n`)
 
     await installNodeRuntime(runtimeRoot, arch)
     writeLauncher(releaseRoot)
@@ -53,7 +61,10 @@ async function build(arch) {
     writeManifest(releaseRoot, arch)
 
     if (!skipZip) {
-      createUnixZip(releaseRoot, zipPath, packageName)
+      zipDirectory(releaseRoot, zipPath, {
+        prefix: packageName,
+        executable: relative => relative === '桌游大厅.command' || relative === `${runtimeDirName}/node`,
+      })
       console.log(`ZIP=${zipPath}`)
     }
     console.log(`RELEASE_DIR=${releaseRoot}`)
@@ -125,7 +136,8 @@ async function installNodeRuntime(runtimeRoot, arch) {
     if (!response.ok || !response.body) throw new Error(`下载 Node.js 失败：HTTP ${response.status}`)
     await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(archivePath))
     const extractedRoot = path.join(temporaryRoot, `node-v${nodeVersion}-darwin-${arch}`)
-    const result = spawnSync('tar', ['-xzf', archivePath, '-C', temporaryRoot], { stdio: 'inherit' })
+    const archiveRoot = `node-v${nodeVersion}-darwin-${arch}`
+    const result = spawnSync('tar', ['-xzf', archivePath, '-C', temporaryRoot, `${archiveRoot}/bin/node`, `${archiveRoot}/LICENSE`], { stdio: 'inherit' })
     if (result.error) throw new Error('无法运行 tar 解压 Node.js：' + result.error.message)
     if (result.status !== 0) throw new Error('Node.js 运行时解压失败。')
     fs.copyFileSync(path.join(extractedRoot, 'bin', 'node'), path.join(runtimeRoot, 'node'))
@@ -137,27 +149,7 @@ async function installNodeRuntime(runtimeRoot, arch) {
 }
 
 function writeLauncher(releaseRoot) {
-  const launcher = `#!/bin/bash
-ROOT="$(cd "$(dirname "$0")" && pwd)"
-NODE="$ROOT/runtime/node"
-APP="$ROOT/app"
-
-if [ ! -x "$NODE" ]; then
-  echo "无法启动：发布包不完整，缺少 macOS Node.js 运行时。"
-  read -r -p "按回车关闭..."
-  exit 1
-fi
-
-export DSH_HOME="$ROOT/user-data"
-cd "$APP" || exit 1
-"$NODE" portable.mjs
-STATUS=$?
-if [ "$STATUS" -ne 0 ]; then
-  echo
-  read -r -p "启动失败，请查看上方信息。按回车关闭..."
-fi
-exit "$STATUS"
-`
+  const launcher = fs.readFileSync(path.join(toolsDir, 'macos', 'launcher.command'), 'utf8').replaceAll('\r\n', '\n')
   const destination = path.join(releaseRoot, '桌游大厅.command')
   fs.writeFileSync(destination, launcher)
   fs.chmodSync(destination, 0o755)
@@ -175,7 +167,9 @@ function writeInstructions(releaseRoot, arch) {
 4. 游戏期间保留终端窗口；结束时在终端按 Control+C。
 5. 模型地址、密钥等请在大厅设置中重新填写。
 6. 本包不含诡镇奇谈卡牌图片；联网时自动加载，离线时以文字显示。
-   如需离线卡图，请将 BoardgameHall-ArkhamCards 资源包解压到本文件夹并合并 app 文件夹。
+   如需离线卡图，请将 BoardgameHall-ArkhamCards 资源包解压到本文件夹并合并 app 文件夹；大厅启动时会自动并入当前版本。
+7. 自动更新：在“设置 → 更新与游戏”中可一键更新大厅、安装或更新游戏；新版本下载到旁边的 app-版本号 文件夹，
+   重启后切换，启动失败会自动回滚到上一版本。存档与设置始终保留在 user-data。
 
 发布包不包含已有存档、个人 AI 角色、模型密钥或日志。
 新存档及设置保存在本文件夹的 user-data 中；请把完整文件夹放在有写入权限的位置。
@@ -201,6 +195,9 @@ function writeManifest(releaseRoot, arch) {
   const manifest = {
     builtAt: new Date().toISOString(),
     nodeVersion: `v${nodeVersion}`,
+    hallVersion,
+    appDir: appDirName,
+    runtimeDir: runtimeDirName,
     platform: `darwin-${arch}`,
     package: 'logic',
     launcher: '桌游大厅.command',
@@ -210,73 +207,6 @@ function writeManifest(releaseRoot, arch) {
     files: listFiles(releaseRoot).map(file => path.relative(releaseRoot, file).replaceAll('\\', '/')),
   }
   fs.writeFileSync(path.join(releaseRoot, 'build-manifest.json'), JSON.stringify(manifest, null, 2))
-}
-
-function createUnixZip(sourceRoot, destination, packageName) {
-  const output = fs.openSync(destination, 'w')
-  const central = []
-  let offset = 0
-  try {
-    for (const file of listFiles(sourceRoot)) {
-      const relative = path.relative(sourceRoot, file).replaceAll('\\', '/')
-      const name = Buffer.from(`${packageName}/${relative}`)
-      const source = fs.readFileSync(file)
-      const stored = /\.(avif|gif|jpe?g|mp3|mp4|ogg|png|webp|woff2?|zip)$/i.test(relative)
-      const compressed = stored ? source : deflateRawSync(source, { level: 1 })
-      const method = stored ? 0 : 8
-      const crc = crc32(source)
-      const stat = fs.statSync(file)
-      const { date, time } = dosDateTime(stat.mtime)
-      const local = Buffer.alloc(30)
-      local.writeUInt32LE(0x04034b50, 0)
-      local.writeUInt16LE(20, 4)
-      local.writeUInt16LE(0x0800, 6)
-      local.writeUInt16LE(method, 8)
-      local.writeUInt16LE(time, 10)
-      local.writeUInt16LE(date, 12)
-      local.writeUInt32LE(crc, 14)
-      local.writeUInt32LE(compressed.length, 18)
-      local.writeUInt32LE(source.length, 22)
-      local.writeUInt16LE(name.length, 26)
-      fs.writeSync(output, local)
-      fs.writeSync(output, name)
-      fs.writeSync(output, compressed)
-
-      const executable = relative === '桌游大厅.command' || relative === 'runtime/node'
-      const entry = Buffer.alloc(46)
-      entry.writeUInt32LE(0x02014b50, 0)
-      entry.writeUInt16LE(0x0314, 4)
-      entry.writeUInt16LE(20, 6)
-      entry.writeUInt16LE(0x0800, 8)
-      entry.writeUInt16LE(method, 10)
-      entry.writeUInt16LE(time, 12)
-      entry.writeUInt16LE(date, 14)
-      entry.writeUInt32LE(crc, 16)
-      entry.writeUInt32LE(compressed.length, 20)
-      entry.writeUInt32LE(source.length, 24)
-      entry.writeUInt16LE(name.length, 28)
-      entry.writeUInt32LE(((executable ? 0o100755 : 0o100644) << 16) >>> 0, 38)
-      entry.writeUInt32LE(offset, 42)
-      central.push(entry, name)
-      offset += local.length + name.length + compressed.length
-    }
-    const centralOffset = offset
-    for (const part of central) {
-      fs.writeSync(output, part)
-      offset += part.length
-    }
-    const entries = central.length / 2
-    if (entries > 0xffff || offset > 0xffffffff) throw new Error('发布包过大，当前 ZIP 写入器不支持 ZIP64。')
-    const end = Buffer.alloc(22)
-    end.writeUInt32LE(0x06054b50, 0)
-    end.writeUInt16LE(entries, 8)
-    end.writeUInt16LE(entries, 10)
-    end.writeUInt32LE(offset - centralOffset, 12)
-    end.writeUInt32LE(centralOffset, 16)
-    fs.writeSync(output, end)
-  } finally {
-    fs.closeSync(output)
-  }
 }
 
 function walk(root, visit) {
@@ -306,26 +236,4 @@ function compareVersions(left, right) {
     if (difference) return difference
   }
   return 0
-}
-
-function dosDateTime(value) {
-  const year = Math.max(1980, value.getFullYear())
-  return {
-    date: ((year - 1980) << 9) | ((value.getMonth() + 1) << 5) | value.getDate(),
-    time: (value.getHours() << 11) | (value.getMinutes() << 5) | Math.floor(value.getSeconds() / 2),
-  }
-}
-
-function crc32(buffer) {
-  if (!crcTable) {
-    crcTable = new Uint32Array(256)
-    for (let index = 0; index < 256; index++) {
-      let item = index
-      for (let bit = 0; bit < 8; bit++) item = (item & 1) ? 0xedb88320 ^ (item >>> 1) : item >>> 1
-      crcTable[index] = item >>> 0
-    }
-  }
-  let value = 0xffffffff
-  for (const byte of buffer) value = crcTable[(value ^ byte) & 0xff] ^ (value >>> 8)
-  return (value ^ 0xffffffff) >>> 0
 }

@@ -3,6 +3,7 @@
 
 import { createChatNotifications, chatChannel } from './chat-notifications.js'
 import { createOnlineUI } from './online-ui.js'
+import { createUpdatesUI } from './updates-ui.js'
 
 const root = document.getElementById('app')
 const chatNotifications = createChatNotifications({
@@ -169,7 +170,7 @@ const state = {
   setup: null,     // { game, form }
   movePending: null, // 当前请求中的动作（供 Mod 展示处理状态）
   settingsOpen: false,
-  settingsTab: 'ais', // 'player' | 'ais' | 'model' | 'stats'
+  settingsTab: 'ais', // 'player' | 'ais' | 'model' | 'online' | 'stats' | 'updates'
   playerNameDraft: null,
   playerAvatarDraft: null,
   playerAvatarProcessing: false,
@@ -200,6 +201,15 @@ const state = {
 }
 
 const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi })
+const updatesUi = createUpdatesUI({ h, state, render, request: rawApi, reloadCatalog })
+
+async function reloadCatalog() {
+  try {
+    state.catalog = (await api('GET', '/catalog')).games || []
+    for (const game of state.catalog) loadModUi(game)
+  } catch (e) { state.error = String(e.message) }
+  render()
+}
 
 // ---------------------------------------------------------------------------
 // 渲染入口
@@ -380,7 +390,11 @@ function renderLibrary() {
         ? h('div', { className: 'bg-empty' }, '加载中…')
         : state.catalog.map(renderGameCard)
     ),
-    h('button', { className: 'bg-settings-btn', title: '设置 · 玩家与 AI', onclick: () => { state.settingsOpen = true; render() } }, '⚙️')
+    h('button', {
+      className: 'bg-settings-btn' + (updatesUi.hasUpdates() ? ' bg-settings-btn-dot' : ''),
+      title: updatesUi.hasUpdates() ? '设置 · 有可用更新' : '设置 · 玩家与 AI',
+      onclick: () => { state.settingsOpen = true; render() },
+    }, '⚙️')
   )
 }
 
@@ -533,6 +547,7 @@ function renderSettingsModal() {
       state.modelResult = null
       if (key === 'model') initModelForm()
       if (key === 'stats') loadStats()
+      if (key === 'updates') updatesUi.open()
       render()
     },
   }, label)
@@ -545,9 +560,11 @@ function renderSettingsModal() {
         tabBtn('ais', '🤖 AI 角色'),
         tabBtn('model', '🔌 模型连接'),
         tabBtn('online', '🌐 联机'),
-        tabBtn('stats', '📊 AI 指标')
+        tabBtn('stats', '📊 AI 指标'),
+        tabBtn('updates', '🔄 更新与游戏' + (updatesUi.hasUpdates() ? ' •' : ''))
       ),
-      tab === 'player' ? renderPlayerTab() : tab === 'online' ? onlineUi.settingsPanel() : tab === 'model' ? renderModelTab() : (tab === 'stats' ? renderStatsTab() : renderAiList()),
+      tab === 'player' ? renderPlayerTab() : tab === 'online' ? onlineUi.settingsPanel() : tab === 'model' ? renderModelTab()
+        : tab === 'updates' ? updatesUi.panel() : (tab === 'stats' ? renderStatsTab() : renderAiList()),
       h('div', { className: 'bg-modal-foot' },
         h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = false; render() } }, '关闭'),
         tab === 'ais' ? h('button', { className: 'bg-btn', disabled: state.busy, onclick: createAi }, '➕ 新增 AI')
@@ -1640,6 +1657,7 @@ async function boot() {
     state.ais = a.ais || []
     state.config = c
     for (const game of state.catalog) loadModUi(game)
+    updatesUi.boot()
     // 刷新 / 服务端重启后自动回到上一局（服务端已把对局落盘）
     await onlineUi.boot()
     if (!state.online?.room) await resumeSession()

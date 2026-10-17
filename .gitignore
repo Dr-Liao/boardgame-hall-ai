@@ -5,6 +5,9 @@ node_modules/
 .npm-cache/
 dist/
 
+# 更新签名私钥（tools/release/keygen.mjs 生成），只存放在 GitHub Secrets
+.release-keys/
+
 # 浏览器回归（Playwright）的临时输出
 test-results/
 playwright-report/

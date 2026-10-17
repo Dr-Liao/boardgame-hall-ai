@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "games": [
+    {
+      "id": "arkhamhorror",
+      "repo": "Dr-Liao/boardgame-arkhamhorror",
+      "name": "诡镇奇谈：卡牌版",
+      "description": "合作卡牌，1~4 人",
+      "coverEmoji": "🐙"
+    }
+  ]
+}
