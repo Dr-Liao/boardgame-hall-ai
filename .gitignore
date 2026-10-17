@@ -1,0 +1,21 @@
+# 含 API 密钥的本地配置，不要提交
+boardgame.config.json
+
+node_modules/
+.npm-cache/
+dist/
+
+# 浏览器回归（Playwright）的临时输出
+test-results/
+playwright-report/
+.playwright-cli/
+
+# 测试与验收脚本的输出（截图、P7 报告、AI 回归会话等）
+artifacts/
+
+# 上游参考工程的本地拷贝，仅供查阅，不随本仓库分发
+参考资源/
+
+# 测试/本地运行用的临时数据目录（DSH_HOME）
+.test-home/
+.tmp-dsh-home/

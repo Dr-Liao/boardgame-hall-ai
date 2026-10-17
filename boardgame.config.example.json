@@ -1,0 +1,19 @@
+{
+  "playerName": "player",
+  "baseUrl": "https://api.deepseek.com/v1",
+  "apiKey": "sk-你的密钥",
+  "model": "deepseek-flash",
+  "temperature": 0.7,
+  "maxRetries": 3,
+  "timeoutMs": 60000,
+  "maxTokens": 10000,
+  "maxTurnCalls": 24,
+  "jsonMode": "auto",
+  "turnTimeoutMs": 120000,
+  "maxPromptTokens": 131072,
+  "memorySteps": 2,
+  "chatEnabled": true,
+  "chatNotesMax": 12,
+  "chatMaxChars": 500,
+  "chatWindow": 8
+}

@@ -1,0 +1,38 @@
+{
+  "name": "dsh-boardgame-hall",
+  "description": "独立桌游大厅：自带端口 + 网页 + AI 扮演规则 + 桌游 Mod 插件系统",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "main": "server.js",
+  "workspaces": [
+    "games/*"
+  ],
+  "scripts": {
+    "relay:install": "npm ci --prefix relay",
+    "relay:start": "npm start --prefix relay",
+    "test:online": "node --test tests/hall/online.test.mjs",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1",
+    "build:windows:logic": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1 -SkipAssets",
+    "build:windows:assets": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1 -AssetsOnly",
+    "build:mac": "node tools/build-macos.mjs --arch=all",
+    "build:mac:arm64": "node tools/build-macos.mjs --arch=arm64",
+    "build:mac:x64": "node tools/build-macos.mjs --arch=x64",
+    "start": "node server.js",
+    "test": "npm run test:hall && npm run test:mods",
+    "test:hall": "node --test tests/hall/*.test.mjs",
+    "test:mods": "npm test --workspaces --if-present",
+    "test:arkham": "npm test -w games/arkhamhorror",
+    "test:arkham:browser": "npm run test:browser -w games/arkhamhorror",
+    "test:hall:browser": "playwright test --config tests/hall/playwright.config.mjs",
+    "test:p7": "npm run test:p7 -w games/arkhamhorror",
+    "test:release": "npm run test:release -w games/arkhamhorror"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "ws": "8.22.0"
+  },
+  "license": "MIT"
+}

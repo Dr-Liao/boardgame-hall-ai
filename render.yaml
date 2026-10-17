@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: boardgame-relay
+    runtime: node
+    plan: free
+    rootDir: relay
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: RELAY_SECRET
+        generateValue: true

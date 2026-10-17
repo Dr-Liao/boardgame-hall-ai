@@ -1,0 +1,3 @@
+[submodule "games/arkhamhorror"]
+	path = games/arkhamhorror
+	url = ../boardgame-arkhamhorror.git
