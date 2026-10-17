@@ -87,8 +87,8 @@ AI 通过 **OpenAI 兼容的 `/chat/completions` 接口**调用模型，支持 O
 
 | 平台 | 使用方式 | 构建命令 |
 | --- | --- | --- |
-| Windows x64 | 完整解压后双击 `桌游大厅.exe`（默认端口 18787），保留旁边的 `app-*`、`runtime-*` 文件夹和 `current.ini` | `npm run build:windows`，或双击 `build-windows-logic.bat`（程序包）/ `build-windows-assets.bat`（诡镇卡图资源包）/ `build-windows-hall.bat`（纯大厅版，只含五子棋和井字棋，约 35 MB） |
-| macOS | 完整解压后双击 `桌游大厅.command`；首次如有安全提示，右键选择「打开」。Apple 芯片用 `macOS-arm64` 包，Intel 用 `macOS-x64` 包 | `npm run build:mac`（或 `build:mac:arm64` / `build:mac:x64`，也可双击 `build-macos.bat`） |
+| Windows x64 | 完整解压后双击 `桌游大厅.exe`（默认端口 18787），保留旁边的 `app-*`、`runtime-*` 文件夹和 `current.ini` | `npm run build:windows`，或双击 `build-windows-logic.bat`（程序包）/ `build-windows-assets.bat`（诡镇卡图资源包）/ `build-windows-hall.bat`（纯大厅版，只含五子棋和井字棋，约 35 MB，正式发布用的就是这个） |
+| macOS | 完整解压后双击 `桌游大厅.command`；首次如有安全提示，右键选择「打开」。Apple 芯片用 `macOS-arm64` 包，Intel 用 `macOS-x64` 包 | `npm run build:mac`（或 `build:mac:arm64` / `build:mac:x64`，也可双击 `build-macos.bat`）；纯大厅版用 `npm run build:mac:hall` |
 
 构建产物输出到 `dist/`。Windows 程序包的构建需要 x64 Node.js 22.15+ 和 .NET Framework C# 编译器，资源包可以单独构建。
 

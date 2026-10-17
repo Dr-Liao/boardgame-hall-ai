@@ -5,7 +5,7 @@
 // 每个发布目录（build-windows.ps1 / build-macos.mjs 的产物，需含 build-manifest.json）生成：
 //   BoardgameHall-<平台>-<版本>.zip               完整包（首次安装用；取同名 .zip 产物）
 //   BoardgameHall-runtime-<平台>-<Node 版本>.zip  运行时包（顶层目录 runtime-<Node 版本>/）
-// 加 --app 时再从第一个目录生成平台无关的程序包：
+// 加 --app 时再从第一个目录生成平台无关的程序包（所有用户都从它更新，发布纯大厅版时程序包也不含其他游戏）：
 //   BoardgameHall-app-<版本>.zip                   （顶层目录 app-<版本>/）
 //   BoardgameHall-app-<版本>.files.json            增量更新用的文件索引（见 lib/delta.js）
 
@@ -30,7 +30,6 @@ for (const dir of dirs) {
   const runtimeZip = path.join(out, `BoardgameHall-runtime-${platform}-${runtimeVersion}.zip`)
   zipDirectory(path.join(dir, runtimeDir), runtimeZip, { prefix: runtimeDir, executable: relative => relative === 'node' })
   console.log('RUNTIME=' + runtimeZip)
-  if (!appPacked && manifest.package === 'hall-only') throw new Error(dir + ' 是纯大厅版，不能用来生成所有用户共用的程序包')
   if (!appPacked) {
     const appZip = path.join(out, `BoardgameHall-app-${hallVersion}.zip`)
     zipDirectory(path.join(dir, appDir), appZip, { prefix: appDir })

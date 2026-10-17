@@ -30,7 +30,7 @@ GitHub
 
    之后把私钥备份到安全的地方，再从本机删除。私钥丢失后，只能生成新密钥并发布一个同时带新旧公钥的大厅版本。
 
-3. **私有仓库的额外 Secret**：如果诡镇仓库是私有的，在大厅仓库配置 `SUBMODULE_TOKEN`（能读取诡镇仓库的 token）。如果大厅仓库是私有的，在游戏仓库配置 `HALL_REPO_TOKEN`。另外要注意，玩家下载 Release 资源要求仓库公开。
+3. **私有仓库的额外 Secret**：如果大厅仓库是私有的，在游戏仓库配置 `HALL_REPO_TOKEN`（能读取大厅仓库的 token），游戏发布时要用大厅仓库里的打包脚本。大厅发布不签出游戏子模块，不需要额外 token。另外要注意，玩家下载 Release 资源要求仓库公开。
 
 4. **游戏目录**是大厅仓库的 `registry/index.json`，大厅从 `main` 分支的 raw 地址读取。新增或下架游戏时，只要修改这个文件并推送到 `main`，不需要发布大厅新版本：
 
@@ -56,8 +56,8 @@ GitHub
    ```
 
 3. `.github/workflows/release.yml` 会自动完成以下步骤：
-   - 在 Windows 和 macOS 上构建免安装包；
-   - 用 `tools/release/pack-update.mjs` 拆出程序包和各平台运行时包；
+   - 在 Windows 和 macOS 上构建**纯大厅**免安装包，只内置五子棋和井字棋。诡镇等游戏不随大厅发布，玩家从游戏商店安装；
+   - 用 `tools/release/pack-update.mjs` 拆出程序包和各平台运行时包。程序包也来自纯大厅版，只有几百 KB；
    - 用 `tools/release/make-manifest.mjs` 生成并签名 `update-manifest.json`；
    - 发布 GitHub Release。
 
@@ -65,7 +65,7 @@ GitHub
 
 | 文件 | 用途 |
 | --- | --- |
-| `BoardgameHall-<平台>-<版本>.zip` | 完整免安装包，首次安装时下载 |
+| `BoardgameHall-<平台>-<版本>.zip` | 纯大厅免安装包（`win32-x64`、`darwin-arm64`、`darwin-x64`），首次安装时下载 |
 | `BoardgameHall-app-<版本>.zip` | 程序包（平台无关，顶层目录 `app-<版本>/`）。增量更新按需从中分段读取，退回整包时才完整下载 |
 | `BoardgameHall-app-<版本>.files.json` | 程序包的文件索引，用于增量更新 |
 | `BoardgameHall-runtime-<平台>-<Node 版本>.zip` | 运行时包，只在 Node 版本变化时下载 |
@@ -77,7 +77,7 @@ GitHub
 
 发布脚本为每个程序包和游戏包生成文件索引 `<包名>.files.json`，记录每个文件的 sha256，以及它的压缩数据在 ZIP 中的位置。签名清单记录索引的 sha256，索引又记录所属 ZIP 的 sha256，所以信任链和整包下载一样。
 
-更新时，大厅先把本地旧版本中哈希一致的文件硬链接（跨盘时复制）到新版本目录，再用 HTTP Range 从 Release 上的 ZIP 里只取变化的文件，每个文件写入前都会按索引校验 sha256。例如只改了几个脚本时，227 MB 的程序包只需下载几十 KB。
+更新时，大厅先把本地旧版本中哈希一致的文件硬链接（跨盘时复制）到新版本目录，再用 HTTP Range 从 Release 上的 ZIP 里只取变化的文件，每个文件写入前都会按索引校验 sha256。例如只改了几个脚本时，211 MB 的诡镇游戏包只需下载几 KB。
 
 以下情况会自动退回下载完整 ZIP：
 
@@ -131,7 +131,7 @@ user-data/             存档、配置、AI 角色和下载的游戏，所有版
 edition.json           仅纯大厅版有：列出内置的游戏
 ```
 
-纯大厅版由 `build-windows-hall.bat`（`build-windows.ps1 -HallOnly`）构建，只内置五子棋和井字棋。它和完整版使用同一份程序包更新，但更新时会按 `edition.json` 跳过其他内置游戏，所以始终保持精简。诡镇等游戏可从游戏商店安装。`pack-update.mjs --app` 会拒绝用纯大厅版生成共用的程序包。
+正式发布的是纯大厅版：Windows 用 `build-windows-hall.bat` 或 `npm run build:windows:hall` 构建，macOS 用 `npm run build:mac:hall`。它只内置五子棋和井字棋，诡镇等游戏从游戏商店安装。更新时还会按 `edition.json` 跳过其他内置游戏。所以本地自行构建、内置了诡镇的完整版从 Release 更新时，内置的诡镇不会被带到新版本，需要从商店重新安装（存档不受影响）。
 
 ### 大厅更新流程
 

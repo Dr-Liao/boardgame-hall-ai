@@ -1,7 +1,7 @@
-# 推送 v<版本> tag 时构建免安装包、拆分自动更新包、签名清单并发布 GitHub Release。
+# 推送 v<版本> tag 时构建纯大厅免安装包（只内置五子棋和井字棋）、拆分自动更新包、签名清单并发布 GitHub Release。
+# 诡镇奇谈等游戏各自发布，玩家从大厅的游戏商店安装，所以这里不签出游戏子模块。
 # 需要的仓库 Secret：
 #   BOARDGAME_UPDATE_PRIVATE_KEY  更新签名私钥（tools/release/keygen.mjs 生成）
-#   SUBMODULE_TOKEN               可选；诡镇子模块为私有仓库时，提供有读取权限的 token
 name: Release
 
 on:
@@ -16,20 +16,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Check tag matches package.json
         shell: bash
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
-      - name: Build portable package
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1 -SkipAssets
+      - name: Build hall-only portable package
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1 -HallOnly
       - name: Split update packages
         shell: bash
-        run: node tools/release/pack-update.mjs dist/BoardgameHall-Windows-x64-*/ --app --out=dist/release
+        run: node tools/release/pack-update.mjs dist/BoardgameHall-Lite-Windows-x64-*/ --app --out=dist/release
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
@@ -39,16 +36,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Build portable packages
-        run: node tools/build-macos.mjs --arch=all
+      - name: Build hall-only portable packages
+        run: node tools/build-macos.mjs --arch=all --hall-only
       - name: Split update packages
-        run: node tools/release/pack-update.mjs dist/BoardgameHall-macOS-*/ --out=dist/release
+        run: node tools/release/pack-update.mjs dist/BoardgameHall-Lite-macOS-*/ --out=dist/release
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
