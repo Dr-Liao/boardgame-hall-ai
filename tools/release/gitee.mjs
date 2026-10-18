@@ -30,7 +30,7 @@ async function api(method, route, body) {
   if (method === 'GET') url.searchParams.set('access_token', token)
   else if (body instanceof FormData) { body.set('access_token', token); payload = body }
   else payload = new URLSearchParams({ access_token: token, ...body })
-  const response = await fetch(url, { method, body: payload, signal: AbortSignal.timeout(10 * 60_000) })
+  const response = await fetch(url, { method, body: payload, signal: AbortSignal.timeout(method === 'GET' ? 60_000 : 4 * 60_000) })
   const text = await response.text()
   if (response.status === 404 && method === 'GET') return null
   if (!response.ok) throw new Error(`Gitee ${method} ${route} 失败：HTTP ${response.status} ${text.slice(0, 300)}`)
@@ -60,9 +60,21 @@ async function release() {
     const size = fs.statSync(file).size
     if (existing.has(name)) { console.log('已存在，跳过 ' + name); continue }
     if (size > maxBytes) { console.warn(`超过 ${maxBytes / 1048576} MB，跳过 ${name}（大厅会从 GitHub 下载）`); continue }
-    const form = new FormData()
-    form.set('file', new Blob([await fs.promises.readFile(file)]), name)
-    await api('POST', `/releases/${item.id}/attach_files`, form)
+    const data = new Blob([await fs.promises.readFile(file)])
+    // 从海外 CI 访问 Gitee 偶尔整个请求挂住；失败后先确认附件是否其实已到，再重传。
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const form = new FormData()
+        form.set('file', data, name)
+        await api('POST', `/releases/${item.id}/attach_files`, form)
+        break
+      } catch (error) {
+        const uploaded = ((await api('GET', `/releases/${item.id}/attach_files?per_page=100`).catch(() => null)) || []).some(file => file.name === name)
+        if (uploaded) break
+        if (attempt >= 3) throw error
+        console.warn(`上传 ${name} 失败（${error.cause?.code || error.message}），第 ${attempt + 1} 次重试`)
+      }
+    }
     console.log(`已上传 ${name}（${(size / 1048576).toFixed(1)} MB）`)
   }
 }
