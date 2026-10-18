@@ -409,7 +409,7 @@ function renderLibrary() {
         h('div', { className: 'bg-sub' }, '选择一款桌游，与朋友联机或与 AI 对弈')
       ),
       h('div', { className: 'bg-model-pill' + (cfg.hasKey ? '' : ' bg-model-pill-off') },
-        '🧠 ' + (cfg.hasKey ? (cfg.model || '已配置') : '未配置模型') + (cfg.hasKey ? '' : '（AI 随机兜底）')
+        '🧠 ' + (cfg.hasKey ? (cfg.model || '已配置') : '未配置模型') + (cfg.hasKey ? '' : '，AI 会随机行动')
       )
     ),
     h('div', { className: 'bg-online-entry' }, onlineUi.joinButton(), updatesUi.gameCenterButton()),
@@ -812,17 +812,17 @@ function renderModelTab() {
     open: state.modelAdvancedOpen,
     ontoggle: (e) => { state.modelAdvancedOpen = !!e.target.open },
   },
-    h('summary', null, '⚙️ 高级参数（采样 / 重试 / 预算 / 记忆 / 战术交流）'),
+    h('summary', null, '⚙️ 高级参数'),
     h('p', { className: 'bg-field-hint', style: { marginTop: '8px' } }, '保存后写入 boardgame.config.json；若同名环境变量已设置，环境变量仍然优先。留空会回落到当前值或默认值。'),
     h('div', { className: 'bg-sec' }, '采样与单次调用'),
     h('div', { className: 'bg-grid-2' },
       advancedNumber('温度 temperature', 'temperature', { step: '0.1', min: '0', max: '2' }, '越高越随机；默认 0.7'),
       advancedNumber('Top P', 'topP', { step: '0.05', min: '0', max: '1' }, '<=0 表示不发送该参数'),
       advancedSelect('结构化输出 jsonMode', [
-        { value: 'auto', label: 'auto（推荐）' },
-        { value: 'on', label: 'on（始终要求 JSON）' },
-        { value: 'off', label: 'off（仅靠提示词约束）' },
-      ], f.jsonMode, (e) => { f.jsonMode = e.target.value }, 'auto 会在后端不支持 response_format 时自动降级'),
+        { value: 'auto', label: 'auto' },
+        { value: 'on', label: 'on' },
+        { value: 'off', label: 'off' },
+      ], f.jsonMode, (e) => { f.jsonMode = e.target.value }, '推荐 auto，后端不支持 response_format 时会自动降级；on 始终要求 JSON；off 只靠提示词约束'),
       advancedNumber('单步重试 maxRetries', 'maxRetries', { step: '1', min: '1', max: '20' }, '单个决策步内允许的模型调用次数'),
       advancedNumber('单次超时 timeoutMs (ms)', 'timeoutMs', { step: '1000', min: '1000', max: '600000' }, '单次 /chat/completions 请求的超时时间'),
       advancedNumber('输出上限 maxTokens', 'maxTokens', { step: '100', min: '0', max: '100000' }, '<=0 表示不发送该参数，由后端决定'),
@@ -849,7 +849,7 @@ function renderModelTab() {
   return h('div', null,
     h('p', { className: 'bg-desc' }, '配置大模型后端（OpenAI 兼容 /chat/completions 接口，支持 OpenAI / DeepSeek / Ollama 等）。保存后写入 boardgame.config.json。'),
     env.length ? h('div', { className: 'bg-model-result err' }, '⚠️ 以下字段正被环境变量覆盖，界面保存不会改变实际生效值：' + env.join('、')) : null,
-    h('div', { className: 'bg-field-hint', style: { marginBottom: '14px' } }, currentBudget + '（环境变量优先级最高）'),
+    h('div', { className: 'bg-field-hint', style: { marginBottom: '14px' } }, currentBudget),
     h('div', { className: 'bg-field' },
       h('label', null, 'API 地址'),
       input(f.baseUrl, (e) => { f.baseUrl = e.target.value }, { 'aria-label': 'API 地址', placeholder: 'https://api.deepseek.com/v1', spellcheck: 'false' }),
@@ -1117,9 +1117,9 @@ function renderAiEditor(ai) {
       textInput(draft.name, (e) => { draft.name = e.target.value }, { style: { flex: 1 }, placeholder: '名字' }),
       colorInput
     ),
-    h('div', { className: 'bg-sec' }, '人设（扮演规则，直接作为 system prompt）'),
+    h('div', { className: 'bg-sec' }, '人设'),
     h('div', { className: 'bg-field' },
-      h('label', null, '这段文字决定 AI 怎么下棋、怎么说话'),
+      h('label', null, '这段文字会直接作为 system prompt，决定 AI 怎么下棋、怎么说话'),
       personaEl
     )
   )

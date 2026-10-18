@@ -24,6 +24,7 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
     if (changed) reloadCatalog()
     clearTimeout(pollTimer)
     if (activeWork(view)) pollTimer = setTimeout(() => load().catch(() => {}), 1000)
+    else if (view.checkPending) pollTimer = setTimeout(() => load().catch(() => {}), 2000)
   }
 
   async function load() {
@@ -92,7 +93,7 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
     const hall = view.hall
     if (!hall) return h('div', { className: 'bg-empty' }, '自动更新不可用。')
     const rows = [h('div', { className: 'bg-upd-line' }, '当前版本 ', h('b', null, 'v' + view.hallVersion),
-      hall.mode === 'dev' ? '（开发版）' : hall.mode === 'manual' ? '（不支持自动更新的安装方式）' : '')]
+      hall.mode === 'dev' ? '，开发版' : hall.mode === 'manual' ? '，当前安装方式不支持自动更新' : '')]
     if (hall.rolledBack) rows.push(h('div', { className: 'bg-model-result err' }, `⚠️ 新版本 v${hall.rolledBack} 启动失败，已自动回滚到当前版本。`))
     if (hall.error) rows.push(h('div', { className: 'bg-model-result err' }, '❌ ' + hall.error))
     if (hall.mode === 'disabled') rows.push(h('div', { className: 'bg-field-hint' }, '未配置发布仓库，无法检查大厅更新。'))
@@ -106,7 +107,7 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
       } else if (download.state === 'downloading') {
         action = h('div', { className: 'bg-upd-progress' }, h('span', { style: { width: percent(download.received, download.total) } }), h('em', null, progressText('下载中', download)))
       } else if (download.state === 'ready') {
-        action = h('div', { className: 'bg-field-hint' }, '✔ 新版本已准备就绪，重启大厅后生效（下方「重启大厅」）。')
+        action = h('div', { className: 'bg-field-hint' }, '✔ 新版本已准备就绪，点击下方「重启大厅」后生效。')
       } else {
         action = h('button', { className: 'bg-btn', disabled: !!state.updatesBusy, onclick: () => act('hall', 'POST', '/updates/hall/download', {}) },
           (download.state === 'error' ? '重试下载' : '下载更新') + '（' + sizeText(hall.latest) + '）')
@@ -234,6 +235,16 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
         h('p', { className: 'bg-desc' }, '浏览、安装和更新游戏。游戏从 GitHub Release 下载并经过签名校验，卸载后存档仍会保留。'),
         !view ? loading() : [
           errorLine(),
+          hasHallUpdates() ? h('div', { className: 'bg-upd-card' },
+            h('div', { className: 'bg-upd-title' }, view.restartRequired && !view.hall?.available
+              ? '🔁 更新已就绪，重启大厅后生效'
+              : '🆕 大厅有新版本 v' + view.hall.latest.version),
+            h('button', { className: 'bg-btn', onclick: () => {
+              state.gameCenterOpen = false
+              state.settingsOpen = true
+              state.settingsTab = 'updates'
+              render()
+            } }, '前往「设置 → 大厅更新」')) : null,
           view.store?.registry.error ? h('div', { className: 'bg-model-result err' }, '❌ ' + view.store.registry.error) : null,
           games.length ? h('div', { className: 'bg-ai-list' }, games.map(renderGame)) : h('div', { className: 'bg-empty' }, '点击「检查更新」获取可下载的游戏。'),
           h('div', { className: 'bg-field-hint' }, '游戏目录上次检查：' + timeText(view.store?.registry.checkedAt)),
@@ -254,8 +265,9 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
     hasGameUpdates,
     gameCenterModal,
     gameCenterButton: () => h('button', {
-      className: 'bg-btn secondary bg-game-center-btn' + (hasGameUpdates() ? ' bg-game-center-btn-dot' : ''),
-      title: hasGameUpdates() ? '游戏中心 · 有游戏可更新' : '游戏中心 · 安装与更新游戏',
+      className: 'bg-btn secondary bg-game-center-btn' + (hasHallUpdates() || hasGameUpdates() ? ' bg-game-center-btn-dot' : ''),
+      title: hasHallUpdates() ? '游戏中心 · 大厅有可用更新'
+        : hasGameUpdates() ? '游戏中心 · 有游戏可更新' : '游戏中心 · 安装与更新游戏',
       onclick: () => {
         state.gameCenterOpen = true
         render()

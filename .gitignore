@@ -4,6 +4,7 @@ boardgame.config.json
 node_modules/
 .npm-cache/
 dist/
+temp/
 
 # 更新签名私钥（tools/release/keygen.mjs 生成），只存放在 GitHub Secrets
 .release-keys/
