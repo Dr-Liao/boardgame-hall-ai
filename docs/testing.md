@@ -47,21 +47,31 @@ tier 之间不重叠、清单里的文件真实存在。任何 tier 开始跑之
 典型例子是 `music-assets.test.mjs`——它在串行全量里被判红（别的用例往内容注册表里注册了测试战役），
 独立跑却通过。按文件隔离进程后这类互相污染不会再发生。
 
-## 已知红（与你的改动无关）
+## 生成物与账本：看到红先重生成，不要当成"我改坏了什么"
 
-`import-cards.test.mjs` 有两个用例在仓库当前状态下就失败：`参考资源` 里的 5 个源 JSON 比生成物新，
-`src/cards/cards-data.js` 的 `resourceVersion` 与 `audit/catalog-report.json` 的 `bytes`/`sha256` 对不上。
-
-同步方式（会改 `resourceVersion`，旧存档读取时走迁移而不是丢弃）：
+卡池或内容改动之后，仓库里有几类**派生文件**会比源文件旧，跑测试就会红。它们不是用例失败，按下面顺序重生成即可：
 
 ```bash
 cd games/arkhamhorror
-npm run import           # 重新生成 cards-data.js 与 catalog-report.json
-npm run presentation:write   # 再同步展示资源报告里的资源版本
-npm run test:assets
+node tools/audit-core-acceptance.mjs --write     # Core 逐卡验收账本
+node tools/audit-p6.mjs --write                  # P6 行为差异账本
+node tools/audit-dunwich-acceptance.mjs --write  # 敦威治逐卡账本
+node tools/audit-carcosa-all-cards.mjs --write   # 卡尔克萨逐卡账本
+node tools/audit-carcosa-scenarios.mjs --write   # 卡尔克萨逐章账本
+node tools/import-cards.mjs --write              # src/cards/cards-data.js、audit/catalog-report.json
+node tools/build-presentation.mjs --write        # 展示资源报告里的资源版本
 ```
 
-在没同步之前，不要把这两个失败当成"我改坏了什么"。
+`--write` 不是改哈希糊过去：逐卡账本会**先重跑证据用例**，任何一条不是 `pass` 都直接退出、不写盘。
+
+顺序有依赖：账本脚本会重写 `src/cards/*-acceptance.js`，而 `resourceVersion` 把这类文件一起算进摘要，
+所以**先跑账本、再跑 `import-cards` 和 `build-presentation`**，否则 `import-cards --check` 会一直报"生成物漂移"。
+
+判定红线：`node tools/<脚本> --check` 全部应当零漂移。改过证据用例（`tests/*.test.mjs`）后要重跑对应账本脚本，
+否则账本会报 `Stale evidence`。
+
+当心换行符：仓库约定 `* text=auto eol=lf`。账本锁的是**工作区字节**，如果一个被锁文件在 Windows 上被写成 CRLF，
+提交后再 checkout 会变成 LF，哈希就再也对不上。生成或改写文件后确认它是 LF。
 
 ## 浏览器回归
 
