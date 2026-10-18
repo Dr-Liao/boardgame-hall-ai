@@ -1,8 +1,9 @@
-// 设置 · 更新与游戏：大厅自动更新 + 游戏商店。
+// 设置 · 大厅更新 + 大厅「游戏中心」弹窗（游戏商店）。
 // 只与 /api/updates、/api/store/* 通信；下载在服务端后台进行，这里轮询进度。
 
 export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
   state.updates = null
+  state.gameCenterOpen = false
   state.updatesBusy = null       // 'check' | 'settings' | 'restart' | 'hall' | 'game:<id>'
   state.updatesError = null
   state.updatesMirrorDraft = null
@@ -44,12 +45,6 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
       state.updatesBusy = null
       render()
     }
-  }
-
-  function hasUpdates() {
-    const view = state.updates
-    if (!view) return false
-    return !!view.hall?.available || !!view.restartRequired || (view.store?.games || []).some(game => game.installed && game.updateAvailable)
   }
 
   async function restart() {
@@ -195,37 +190,78 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
     ]
   }
 
+  const errorLine = () => state.updatesError ? h('div', { className: 'bg-model-result err' }, '❌ ' + state.updatesError) : null
+  const loading = () => h('div', null, errorLine(), h('div', { className: 'bg-empty' }, '读取中…'))
+
+  function footActions(view) {
+    const checking = state.updatesBusy === 'check' || view.hall?.checking || view.store?.registry.checking
+    return [
+      view.restartRequired && view.restartable
+        ? h('button', { className: 'bg-btn', disabled: !!state.updatesBusy || restarting, onclick: restart }, restarting ? '正在重启…' : '🔁 重启大厅')
+        : view.restartRequired ? h('div', { className: 'bg-field-hint' }, '请关闭并重新打开大厅以完成更新。') : null,
+      h('button', { className: 'bg-btn secondary', disabled: !!state.updatesBusy || checking, onclick: () => act('check', 'POST', '/updates/check', {}) },
+        checking ? '检查中…' : '🔄 检查更新'),
+    ]
+  }
+
+  // 设置 · 大厅更新：大厅版本与下载设置。
   function panel() {
     const view = state.updates
-    if (!view) {
-      return h('div', null,
-        state.updatesError ? h('div', { className: 'bg-model-result err' }, '❌ ' + state.updatesError) : null,
-        h('div', { className: 'bg-empty' }, '读取中…'))
-    }
-    const games = view.store?.games || []
-    const checking = state.updatesBusy === 'check' || view.hall?.checking || view.store?.registry.checking
+    if (!view) return loading()
     return h('div', null,
-      h('p', { className: 'bg-desc' }, '大厅与游戏都从 GitHub Release 获取更新，下载内容经过签名校验。存档、设置和 AI 角色不受更新影响。'),
-      state.updatesError ? h('div', { className: 'bg-model-result err' }, '❌ ' + state.updatesError) : null,
+      h('p', { className: 'bg-desc' }, '大厅从 GitHub Release 获取更新，下载内容经过签名校验。存档、设置和 AI 角色不受更新影响。游戏的安装与更新请到大厅的「🎮 游戏中心」。'),
+      errorLine(),
       h('div', { className: 'bg-sec' }, '大厅'),
       renderHall(view),
-      h('div', { className: 'bg-sec' }, '游戏'),
-      view.store?.registry.error ? h('div', { className: 'bg-model-result err' }, '❌ ' + view.store.registry.error) : null,
-      games.length ? h('div', { className: 'bg-ai-list' }, games.map(renderGame)) : h('div', { className: 'bg-empty' }, '点击「检查更新」获取可下载的游戏。'),
-      h('div', { className: 'bg-field-hint' }, '游戏目录上次检查：' + timeText(view.store?.registry.checkedAt)),
       h('div', { className: 'bg-sec' }, '设置'),
       renderSettings(view),
-      h('div', { className: 'bg-modal-foot' },
-        view.restartRequired && view.restartable
-          ? h('button', { className: 'bg-btn', disabled: !!state.updatesBusy || restarting, onclick: restart }, restarting ? '正在重启…' : '🔁 重启大厅')
-          : view.restartRequired ? h('div', { className: 'bg-field-hint' }, '请关闭并重新打开大厅以完成更新。') : null,
-        h('button', { className: 'bg-btn secondary', disabled: !!state.updatesBusy || checking, onclick: () => act('check', 'POST', '/updates/check', {}) },
-          checking ? '检查中…' : '🔄 检查更新')))
+      h('div', { className: 'bg-modal-foot' }, footActions(view)))
+  }
+
+  function hasGameUpdates() {
+    return (state.updates?.store?.games || []).some(game => game.installed && game.updateAvailable)
+  }
+
+  // 游戏中心：游戏商店的独立弹窗。
+  function gameCenterModal() {
+    if (!state.gameCenterOpen) return null
+    const view = state.updates
+    const games = view?.store?.games || []
+    const close = () => { state.gameCenterOpen = false; render() }
+    return h('div', { className: 'bg-backdrop', onclick: close },
+      h('div', { className: 'bg-modal bg-game-center', role: 'dialog', 'aria-label': '游戏中心', onclick: event => event.stopPropagation() },
+        h('h2', null, '🎮 游戏中心'),
+        h('p', { className: 'bg-desc' }, '浏览、安装和更新游戏。游戏从 GitHub Release 下载并经过签名校验，卸载后存档仍会保留。'),
+        !view ? loading() : [
+          errorLine(),
+          view.store?.registry.error ? h('div', { className: 'bg-model-result err' }, '❌ ' + view.store.registry.error) : null,
+          games.length ? h('div', { className: 'bg-ai-list' }, games.map(renderGame)) : h('div', { className: 'bg-empty' }, '点击「检查更新」获取可下载的游戏。'),
+          h('div', { className: 'bg-field-hint' }, '游戏目录上次检查：' + timeText(view.store?.registry.checkedAt)),
+        ],
+        h('div', { className: 'bg-modal-foot' },
+          view ? footActions(view) : null,
+          h('button', { className: 'bg-btn secondary', onclick: close }, '关闭'))))
+  }
+
+  function hasHallUpdates() {
+    const view = state.updates
+    return !!view?.hall?.available || !!view?.restartRequired
   }
 
   return {
     panel,
-    hasUpdates,
+    hasHallUpdates,
+    hasGameUpdates,
+    gameCenterModal,
+    gameCenterButton: () => h('button', {
+      className: 'bg-btn secondary bg-game-center-btn' + (hasGameUpdates() ? ' bg-game-center-btn-dot' : ''),
+      title: hasGameUpdates() ? '游戏中心 · 有游戏可更新' : '游戏中心 · 安装与更新游戏',
+      onclick: () => {
+        state.gameCenterOpen = true
+        render()
+        load().catch(error => { state.updatesError = error.message; render() })
+      },
+    }, '🎮 游戏中心'),
     open() { load().catch(error => { state.updatesError = error.message; render() }) },
     boot() {
       const refresh = () => load().catch(() => {})

@@ -105,7 +105,7 @@ function scheduleChecks(updater, store) {
   const run = async () => {
     if (!autoCheckAllowed(loadUpdateSettings())) return
     const [hall] = await Promise.all([updater.mode === 'disabled' ? null : updater.check(), store.check()])
-    if (hall?.available) console.log('  [update] 发现大厅新版本 ' + hall.latest.version + '，可在「设置 → 更新与游戏」中更新')
+    if (hall?.available) console.log('  [update] 发现大厅新版本 ' + hall.latest.version + '，可在「设置 → 大厅更新」中更新')
     const games = store.status().games.filter(game => game.installed && game.updateAvailable)
     if (games.length) console.log('  [update] 有 ' + games.length + ' 个游戏可更新：' + games.map(game => game.name).join('、'))
   }

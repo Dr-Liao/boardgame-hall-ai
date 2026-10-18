@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `games/gobang` | 双人对弈 | 五子棋，Mod 的参考实现 |
 | `games/ox` | 双人对弈 | 井字棋 |
-| `games/arkhamhorror` | 合作卡牌 | 诡镇奇谈：卡牌版，独立仓库（git 子模块），见 [诡镇 README](games/arkhamhorror/README.md) |
+| `games/arkhamhorror` | 合作卡牌 | 诡镇奇谈：卡牌版，独立仓库 [boardgame-arkhamhorror](https://github.com/Dr-Liao/boardgame-arkhamhorror)（git 子模块），见 [诡镇 README](games/arkhamhorror/README.md) |
 
 ---
 
@@ -21,7 +21,7 @@
 需要 Node.js 22.15+。
 
 ```bash
-git clone --recursive <大厅仓库地址>
+git clone --recursive https://github.com/Dr-Liao/boardgame-hall-ai.git
 # 已经克隆过的话：git submodule update --init
 npm install        # 同时安装大厅与 games/* 下各 Mod 的依赖（npm workspaces）
 ```
@@ -92,9 +92,11 @@ AI 通过 **OpenAI 兼容的 `/chat/completions` 接口**调用模型，支持 O
 
 构建产物输出到 `dist/`。Windows 程序包的构建需要 x64 Node.js 22.15+ 和 .NET Framework C# 编译器，资源包可以单独构建。
 
+构建脚本不认识具体游戏：纯大厅版内置哪些游戏由 `package.json` 的 `boardgame.liteGames` 决定；游戏在自己的 `boardgame-mod.json` 里声明要拆成独立资源包的文件（`assetPacks`）和追加到使用说明的条目（`portableNotes`），格式见 `tools/release/stage-games.mjs` 顶部注释。
+
 ### 自动更新与游戏商店
 
-大厅和每个游戏各自在 GitHub Release 上发版。大厅启动后以及之后每 6 小时检查一次新版本，可在「⚙️ 设置 → 🔄 更新与游戏」中操作：
+大厅和每个游戏各自在 GitHub Release 上发版。大厅启动后以及之后每 6 小时检查一次新版本，大厅更新在「⚙️ 设置 → 🔄 大厅更新」中操作，游戏的安装与更新在大厅的「🎮 游戏中心」弹窗中操作：
 
 - **更新大厅**：新版本下载到 `app-<版本>/` 旁路目录，重启后切换。新版本启动失败时，启动器会自动回滚到上一版本。
 - **安装或更新游戏**：游戏下载到 `user-data/boardgame-hall/mods/<id>/<版本>/`。新游戏装完立即可玩，已加载游戏的新版本在重启后生效。
@@ -128,7 +130,7 @@ AI 角色的核心是 `persona`（人设），这段文本会原样注入 system
 
 ### 自动存档
 
-每次成功提交行动后，整局会写入 `<DSH_HOME 或 ~/.dsh>/boardgame-hall/sessions/<sessionId>.json`。进程重启或网页刷新后会回到上一局；损坏或版本不符的旧存档会被丢弃，不会阻断启动。
+每次成功提交行动后，整局会写入 `<DSH_HOME 或 ~/.dsh>/boardgame-hall/sessions/<游戏 id>/<sessionId>.json`，每个游戏一个子目录（旧版直接放在 `sessions/` 下的存档会自动迁移过去）。进程重启或网页刷新后会回到上一局；损坏或版本不符的旧存档会被丢弃，不会阻断启动。
 
 存档默认保留 14 天，`BOARDGAME_PERSIST=0` 关闭持久化，`BOARDGAME_PERSIST_TTL_DAYS` 调整保留天数。退出对局会删除该局存档。
 
@@ -189,7 +191,8 @@ lib/server.js 大厅：会话、路由、应用行动
 ├── games/                   # 每个桌游一个 Mod
 ├── public/                  # 大厅网页
 ├── relay/                   # 联机中转服务
-├── tests/hall/              # 大厅通用回归
+├── tests/hall/              # 大厅通用回归（只依赖五子棋、井字棋和测试专用 Mod）
+├── tests/fixtures/mods/     # 大厅测试专用 Mod，覆盖多人、私有信息、同时行动等能力，不随发布包分发
 └── docs/                    # 设计与使用文档
 ```
 
@@ -228,10 +231,11 @@ export default {
 ```bash
 npm run test:hall           # 大厅核心回归（用本地假模型，不消耗付费额度）
 npm run test:hall:browser   # 大厅浏览器回归（复用系统 Edge）
+npm run test:mod -- <id> [脚本]  # 运行某个游戏自己的测试脚本，如 npm run test:mod -- arkhamhorror fast
 npm test                    # 大厅 + 所有 Mod
 ```
 
-诡镇奇谈的分层测试命令见 [诡镇 README](games/arkhamhorror/README.md#测试)，耗时与已知问题见 [测试说明](docs/testing.md)。
+大厅回归不依赖任何具体游戏：需要多人、私有手牌、同时行动、批量确认等能力时，用 `tests/fixtures/mods/` 下的测试专用 Mod；各游戏在大厅上的集成回归（如诡镇的联机测试）放在游戏自己的仓库里。诡镇奇谈的分层测试命令见 [诡镇 README](games/arkhamhorror/README.md#测试)，耗时与已知问题见 [测试说明](docs/testing.md)。
 
 ### REST API
 

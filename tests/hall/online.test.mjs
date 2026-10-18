@@ -6,11 +6,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRelay } from '../../relay/server.js'
 import { createServer } from '../../lib/server.js'
-import { loadMods } from '../../lib/mods.js'
 import { relayAddress } from '../../lib/online.js'
 import { snapshotPath } from '../../lib/sessions.js'
+import { loadTestMods } from './helpers/mods.mjs'
 
-const arkham = fs.existsSync(new URL('../../games/arkhamhorror/index.js', import.meta.url)) ? {} : { skip: '未检出 games/arkhamhorror 子模块' }
+// 多人、私有信息、同时行动、批量确认与存档兼容统一用测试专用 Mod（tests/fixtures/mods/fixture-cards）验证；
+// 具体游戏在联机层上的集成回归放在各自仓库（如 games/arkhamhorror/tests/hall-online.test.mjs）。
+const CARDS = 'fixture-cards'
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))
 const stop = server => new Promise(resolve => { server.stopRelay?.(); server.online?.close(); server.closeAllConnections(); server.close(resolve) })
 async function waitFor(fn, timeout = 6000) {
@@ -22,7 +24,7 @@ async function fixture(t, count = 2, persistHost = false) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-online-'))
   const previous = process.env.DSH_HOME
   process.env.DSH_HOME = home
-  const mods = await loadMods()
+  const mods = await loadTestMods()
   const relay = createRelay({ secret: 'integration-test-secret' }), relayUrl = await listen(relay)
   const halls = []
   for (let i = 0; i < count; i++) {
@@ -91,9 +93,10 @@ test('two halls: ready, authoritative seats, revisions, duplicate operations, ch
   await waitFor(async () => !(await guest.call('status')).room)
 })
 
-test('Arkham supports three human seats, private hands and private chat projection', arkham, async t => {
+test('three human seats see only their own hands; private chat reaches only its participants', async t => {
   const { halls: [host, guest, third], relayUrl } = await fixture(t, 3)
-  const created = await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 3, settings: { difficulty: 'easy' }, fillAi: false })
+  const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 3, settings: { seed: 'three-seats' }, fillAi: false })
+  assert.equal(created.ok, true, created.error)
   for (const hall of [guest, third]) {
     assert.equal((await hall.call('join', { relayUrl, code: created.room.code })).ok, true)
     await hall.call('ready', { ready: true })
@@ -103,9 +106,12 @@ test('Arkham supports three human seats, private hands and private chat projecti
   await waitFor(async () => (await third.call('status')).session)
   const other = (await third.call('status')).session
   assert.equal(other.mySeat, 2)
-  assert.deepEqual(other.state.humanSeats, [0, 1, 2])
-  assert.deepEqual(other.settings, {})
-  for (const inv of other.state.investigators.filter(inv => inv.seat !== 2)) assert.deepEqual(inv.hand, [])
+  assert.deepEqual(other.players.map(p => p.role), ['human', 'human', 'human'])
+  assert.deepEqual(other.settings, {}, 'room settings are not projected to guests')
+  assert.equal(other.state.hands[2].length, 4)
+  assert.deepEqual(other.state.hands[0], [])
+  assert.deepEqual(other.state.hands[1], [])
+  assert.deepEqual(other.state.deck, [])
   await guest.command('chat', { text: '仅第二和第三位可见', to: 2 })
   await waitFor(async () => (await third.call('status')).session.events.some(e => e.text === '仅第二和第三位可见'))
   assert.equal((await host.call('status')).session.events.some(e => e.text === '仅第二和第三位可见'), false)
@@ -115,112 +121,67 @@ test('Arkham supports three human seats, private hands and private chat projecti
   assert.equal(moved.ok, true, moved.error)
 })
 
-test('Arkham human seats prepare investigators and decks at the same time', arkham, async t => {
+test('simultaneous phases accept stale seat-local moves but keep teammates\' picks and later team decisions strict', async t => {
   const { halls: [host, guest], relayUrl } = await fixture(t)
-  const created = await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 2, settings: { seed: 'concurrent-hub' }, fillAi: false })
+  const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 2, settings: { seed: 'concurrent' }, fillAi: false })
   assert.equal((await guest.call('join', { relayUrl, code: created.room.code })).ok, true)
   await guest.call('ready', { ready: true })
-  assert.equal((await host.command('start')).ok, true)
-  const opened = await host.command('move', { revision: (await host.call('status')).session.state.revision,
-    move: { action: 'hubGoSetup' } })
-  assert.equal(opened.ok, true, opened.error)
+  const started = await host.command('start')
+  assert.equal(started.ok, true, started.error)
   const seen = await waitFor(async () => {
     const view = (await guest.call('status')).session
-    return view?.state.revision === opened.session.state.revision && view
+    return view?.state.revision === started.session.state.revision && view
   })
   assert.deepEqual(seen.actingSeats, [0, 1])
-  const guestPicks = seen.state.legalMoves.filter(move => move.action === 'hubSelectInvestigator')
-  assert.ok(guestPicks.length > 1, 'guest can choose while the host is still preparing')
+  const picks = seen.state.legalMoves.filter(move => move.action === 'pick')
+  assert.ok(picks.length > 1, 'guest can choose while the host is still preparing')
   const stale = seen.state.revision
-  const hostPick = guestPicks[0], guestPick = guestPicks[1]
+  const [hostPick, guestPick] = picks
   assert.equal((await host.command('move', { revision: stale, move: hostPick })).ok, true)
-  const reserved = await guest.command('move', { revision: stale, move: hostPick })
-  assert.equal(reserved.ok, false, 'a teammate’s pick is reserved')
+  assert.equal((await guest.command('move', { revision: stale, move: hostPick })).ok, false, 'a teammate’s pick is reserved')
   const picked = await guest.command('move', { revision: stale, move: guestPick })
   assert.equal(picked.ok, true, picked.error)
-  assert.equal(picked.session.state.investigators[1].code, guestPick.code)
-  for (const [hall, action] of [[guest, 'hubAutoDeck'], [host, 'hubAutoDeck'], [guest, 'hubDoneSeat']]) {
-    const result = await hall.command('move', { revision: stale, move: { action } })
-    assert.equal(result.ok, true, `${action}: ${result.error}`)
-  }
+  assert.equal(picked.session.state.roles[1], guestPick.role)
+  const guestReady = await guest.command('move', { revision: stale, move: { action: 'ready' } })
+  assert.equal(guestReady.ok, true, guestReady.error)
   const afterGuest = (await host.call('status')).session
   assert.deepEqual(afterGuest.actingSeats, [0])
-  assert.ok(!afterGuest.state.hubReady)
-  const done = await host.command('move', { revision: afterGuest.state.revision, move: { action: 'hubDoneSeat' } })
+  assert.equal(afterGuest.state.phase, 'prep')
+  const done = await host.command('move', { revision: afterGuest.state.revision, move: { action: 'ready' } })
   assert.equal(done.ok, true, done.error)
-  assert.equal(done.session.state.hubReady, true)
+  assert.equal(done.session.state.phase, 'play')
   assert.deepEqual(done.session.actingSeats, [0])
-  const late = await guest.command('move', { revision: stale, move: { action: 'hubSetLeader', leadSeat: 1 } })
-  assert.equal(late.ok, false, 'team decisions keep strict revisions and seat ownership')
+  const late = await guest.command('move', { revision: stale, move: { action: 'pick', role: guestPick.role } })
+  assert.equal(late.ok, false, 'decisions outside the simultaneous phase keep strict revisions and seat ownership')
 })
 
-test('Arkham confirms several staged mulligan cards atomically in one online command', arkham, async t => {
+test('a batch of staged choices commits atomically in one online command', async t => {
   const { halls: [host, guest], relayUrl } = await fixture(t)
-  const created = await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 2,
-    settings: { legacyAutoStart: true, seed: 'batch-mulligan' }, fillAi: false })
+  const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 2, settings: { skipPrep: true, seed: 'batch' }, fillAi: false })
   assert.equal(created.ok, true, created.error)
   assert.equal((await guest.call('join', { relayUrl, code: created.room.code })).ok, true)
   await guest.call('ready', { ready: true })
   const started = await host.command('start')
   assert.equal(started.ok, true, started.error)
   const before = started.session
-  assert.equal(before.state.pendingChoice?.kind, 'mulligan')
-  const hand = before.state.investigators[0].hand
-  assert.ok(hand.length >= 3)
-  const batchChoices = { choiceId: before.state.pendingChoice.id, kind: 'mulligan',
+  assert.equal(before.state.pendingChoice?.kind, 'swap')
+  const hand = before.state.hands[0]
+  const batchChoices = { choiceId: before.state.pendingChoice.id, kind: 'swap',
     selected: [{ index: 0, code: hand[0] }, { index: 2, code: hand[2] }], finish: 'done' }
-  const bad = await host.command('move', { revision: before.state.revision,
+  const forged = await host.command('move', { revision: before.state.revision,
     batchChoices: { ...batchChoices, selected: [{ index: 0, code: hand[0] }, { index: 2, code: 'forged' }] } })
-  assert.equal(bad.ok, false)
-  assert.equal((await host.call('status')).session.state.revision, before.state.revision, 'failed batch cannot commit a partial mulligan')
-  const invalidFinish = await host.command('move', { revision: before.state.revision,
-    batchChoices: { ...batchChoices, finish: 'help' } })
+  assert.equal(forged.ok, false)
+  assert.equal((await host.call('status')).session.state.revision, before.state.revision, 'a rejected batch commits nothing')
+  const invalidFinish = await host.command('move', { revision: before.state.revision, batchChoices: { ...batchChoices, finish: 'help' } })
   assert.equal(invalidFinish.ok, false)
-  assert.equal((await host.call('status')).session.state.revision, before.state.revision, 'a failed final confirmation rolls back earlier valid choices')
+  assert.equal((await host.call('status')).session.state.revision, before.state.revision, 'a failed final confirmation rolls back earlier valid steps')
   const confirmed = await host.command('move', { revision: before.state.revision, batchChoices })
   assert.equal(confirmed.ok, true, confirmed.error)
   assert.equal(confirmed.session.state.revision, before.state.revision + 3)
-  assert.notEqual(confirmed.session.state.pendingChoice?.seat, 0)
+  assert.equal(confirmed.session.state.pendingChoice?.seat, 1)
+  assert.notDeepEqual(confirmed.session.state.hands[0], hand)
   await waitFor(async () => (await guest.call('status')).session?.state.revision === confirmed.session.state.revision)
-  assert.deepEqual((await guest.call('status')).session.state.investigators[0].hand, [], 'other players still cannot see the new hand')
-})
-
-test('Arkham skill card selection uses the same atomic confirmation and validates the current choice', arkham, async t => {
-  const { halls, relayUrl } = await fixture(t)
-  const created = await halls[0].call('create', { relayUrl, modId: 'arkhamhorror', capacity: 2,
-    settings: { legacyAutoStart: true, seed: 'batch-skill-test' }, fillAi: false })
-  assert.equal(created.ok, true, created.error)
-  assert.equal((await halls[1].call('join', { relayUrl, code: created.room.code })).ok, true)
-  await halls[1].call('ready', { ready: true })
-  assert.equal((await halls[0].command('start')).ok, true)
-  let confirmed = false
-  for (let step = 0; step < 80 && !confirmed; step++) {
-    const session = (await halls[0].call('status')).session
-    const seat = session.decisionSeat
-    const view = (await halls[seat].call('status')).session
-    const st = view.state, moves = st.legalMoves
-    const candidate = st.pendingChoice?.kind === 'commit' && moves.find(move => /^\d+$/.test(move.optionId))
-    if (candidate) {
-      const index = Number(candidate.optionId), code = st.investigators[seat].hand[index]
-      const wrong = await halls[seat].command('move', { revision: st.revision, batchChoices: {
-        choiceId: 'stale-choice', kind: 'commit', selected: [{ index, code }], finish: 'done' } })
-      assert.equal(wrong.ok, false)
-      assert.equal((await halls[0].call('status')).session.state.revision, st.revision)
-      const result = await halls[seat].command('move', { revision: st.revision, batchChoices: {
-        choiceId: st.pendingChoice.id, kind: 'commit', selected: [{ index, code }], finish: 'done' } })
-      assert.equal(result.ok, true, result.error)
-      assert.equal(result.session.state.revision, st.revision + 2)
-      confirmed = true
-      break
-    }
-    const move = st.pendingChoice
-      ? moves.find(item => ['done', 'skip', 'pass', 'keep', '0'].includes(item.optionId)) || moves[0]
-      : moves.find(item => item.action === 'investigate') || moves.find(item => item.action === 'endTurn') || moves[0]
-    assert.ok(move, `no legal move at ${step}`)
-    const result = await halls[seat].command('move', { revision: st.revision, move })
-    assert.equal(result.ok, true, result.error)
-  }
-  assert.equal(confirmed, true, 'expected a skill test with a legal card to commit')
+  assert.deepEqual((await guest.call('status')).session.state.hands[0], [], 'other players still cannot see the new hand')
 })
 
 test('relay restart restores room code and seats with persistent signing secret', async t => {
@@ -244,7 +205,7 @@ test('relay restart restores room code and seats with persistent signing secret'
   assert.equal((await guest.call('status')).room.code, created.room.code)
 })
 
-for (const modId of ['ox', 'arkhamhorror']) test(`${modId}: host process restart restores saved game and authenticated room; guest can leave and return`, modId === 'arkhamhorror' ? arkham : {}, async t => {
+for (const modId of ['ox', CARDS]) test(`${modId}: host process restart restores saved game and authenticated room; guest can leave and return`, async t => {
   const { halls: [initial, guest], relayUrl, mods } = await fixture(t)
   await stop(initial.server)
   const hostServer = createServer({ mods, persist: true }); await hostServer.ready
@@ -253,7 +214,7 @@ for (const modId of ['ox', 'arkhamhorror']) test(`${modId}: host process restart
     method: body ? 'POST' : 'GET', headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
   })).json()
   const created = await call(hostUrl, 'create', { relayUrl, modId, capacity: 2, fillAi: false,
-    settings: { legacyAutoStart: true, seed: 'online-persistent-choice' } })
+    settings: { skipPrep: true, seed: 'online-persistent-choice' } })
   await guest.call('join', { relayUrl, code: created.room.code }); await guest.call('ready', { ready: true })
   const cmd = (origin, action, body = {}) => call(origin, 'command', { action, body: { operationId: randomUUID(), ...body } })
   const started = await cmd(hostUrl, 'start')
@@ -276,10 +237,10 @@ for (const modId of ['ox', 'arkhamhorror']) test(`${modId}: host process restart
   assert.equal((await guest.call('status')).memberId, returningId)
   await waitFor(async () => (await guest.call('status')).session?.state.revision === 1)
   const returned = (await guest.call('status')).session
-  if (modId === 'arkhamhorror') {
+  if (modId === CARDS) {
     assert.equal(returned.state.pendingChoice.id, before.state.pendingChoice.id)
-    assert.deepEqual(returned.state.investigators[1].hand, before.state.investigators[1].hand)
-    assert.deepEqual(returned.state.investigators[0].hand, [])
+    assert.deepEqual(returned.state.hands[1], before.state.hands[1])
+    assert.deepEqual(returned.state.hands[0], [])
   }
   const nextMove = modId === 'ox' ? { x: 1, y: 1 } : returned.state.legalMoves.find(m => m.optionId === 'done')
   const moved = await guest.command('move', { revision: 1, move: nextMove })
@@ -336,12 +297,12 @@ test('empty slots can be AI and host executes AI turns once', async t => {
   assert.equal(result.session.state.moveCount, 3)
 })
 
-test('reserved AI seats survive relay restart, block joins, and preserve the chosen AI identities', arkham, async t => {
+test('reserved AI seats survive relay restart, block joins, and preserve the chosen AI identities', async t => {
   const { halls: [host, guest, extra], relay, relayUrl } = await fixture(t, 3)
   for (const aiSeats of [[{ seat: 0 }], [{ seat: 4 }], [{ seat: 1 }, { seat: 1 }]]) {
-    assert.equal((await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 4, aiSeats })).ok, false)
+    assert.equal((await host.call('create', { relayUrl, modId: CARDS, capacity: 4, aiSeats })).ok, false)
   }
-  const created = await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 4,
+  const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 4,
     aiSeats: [{ seat: 1, aiId: 'ai-hu' }, { seat: 3, aiId: 'ai-mei' }] })
   assert.equal(created.ok, true, created.error)
   assert.deepEqual(created.room.aiSeats.map(s => s.seat), [1, 3])
@@ -366,9 +327,10 @@ test('reserved AI seats survive relay restart, block joins, and preserve the cho
   assert.deepEqual(started.session.players.map(p => p.role), ['human', 'ai', 'human', 'ai'])
   assert.equal(started.session.players[1].aiId, 'ai-hu')
   assert.equal(started.session.players[3].aiId, 'ai-mei')
+  assert.deepEqual(started.session.actingSeats, [0, 2], 'AI seats finish the simultaneous phase on their own')
 })
 
-test('online saves reopen as joinable rooms and preserve seats, private state and pending choices', arkham, async t => {
+test('online saves reopen as joinable rooms and preserve seats, private state and pending choices', async t => {
   const { halls: [host, guest, third], relayUrl, mods } = await fixture(t, 3, true)
   const local = async (route, body) => (await fetch(host.origin + '/api/' + route, {
     method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
@@ -376,8 +338,8 @@ test('online saves reopen as joinable rooms and preserve seats, private state an
   const solo = await local('start', { modId: 'ox', settings: { opponents: ['ai-hu'] } })
   assert.equal(solo.ok, true, solo.error)
   assert.equal((await host.call('load', { relayUrl, sessionId: solo.session.sessionId })).ok, false)
-  const created = await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 4,
-    aiSeats: [{ seat: 2, aiId: 'ai-hu' }], settings: { legacyAutoStart: true, seed: 'load-online-save' } })
+  const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 4,
+    aiSeats: [{ seat: 2, aiId: 'ai-hu' }], settings: { skipPrep: true, seed: 'load-online-save' } })
   assert.equal(created.ok, true, created.error)
   assert.equal((await guest.call('join', { relayUrl, code: created.room.code, seat: 2 })).ok, false, 'cannot claim AI seat')
   assert.equal((await guest.call('join', { relayUrl, code: created.room.code, seat: 3 })).ok, true)
@@ -443,13 +405,13 @@ test('online saves reopen as joinable rooms and preserve seats, private state an
   assert.deepEqual(after.state, before.state)
   assert.deepEqual(after.players, before.players)
   assert.deepEqual(after.events, before.events)
-  assert.deepEqual(after.state.investigators[0].hand, [])
+  assert.deepEqual(after.state.hands[0], [])
   assert.equal((await third.command('move', { revision: 1, move: after.state.legalMoves.find(m => m.optionId === 'done') })).ok, true)
 })
 
-test('status updates wake immediately and host operations use the local authority', arkham, async t => {
+test('status updates wake immediately and host operations use the local authority', async t => {
   const { halls: [host, guest], relayUrl } = await fixture(t)
-  const created = await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 2, aiSeats: [] })
+  const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 2, aiSeats: [] })
   await guest.call('join', { relayUrl, code: created.room.code }); await guest.call('ready', { ready: true })
   await waitFor(async () => (await host.call('status')).room.members.every(m => m.ready))
   await host.command('start')
@@ -470,150 +432,4 @@ test('status updates wake immediately and host operations use the local authorit
   const full = host.server.online.metrics.fullBytes - metric.fullBytes
   assert.ok(bytes < full / 10, `delta ${bytes} versus full ${full}`)
   t.diagnostic(`chat snapshot payload: ${bytes} bytes versus ${full} bytes without deltas`)
-})
-
-test('Arkham human guests and an AI teammate complete preparation and opening choices together', arkham, async t => {
-  const { halls: [host, guest], relayUrl } = await fixture(t)
-  const created = await host.call('create', { relayUrl, modId: 'arkhamhorror', capacity: 3, fillAi: true, settings: { seed: 'mixed-arkham-online' } })
-  await guest.call('join', { relayUrl, code: created.room.code }); await guest.call('ready', { ready: true })
-  assert.equal((await host.command('start')).ok, true)
-  for (let step = 0; step < 24; step++) {
-    const s = (await host.call('status')).session
-    if (s.state.uiState === 'inScenario' && s.state.pendingChoice?.kind !== 'mulligan') break
-    const seat = s.decisionSeat
-    assert.ok(seat === 0 || seat === 1, 'the AI runner returns control to a human')
-    const hall = seat ? guest : host
-    await waitFor(async () => (await hall.call('status')).session?.state.revision === s.state.revision)
-    const current = (await hall.call('status')).session
-    const moves = current.state.legalMoves
-    const move = current.state.pendingChoice ? moves.find(m => ['done', 'skip'].includes(m.optionId)) || moves[0]
-      : ['hubGoSetup', 'hubAutoDeck', 'hubDoneSeat', 'hubSelectInvestigator', 'hubBeginScenario', 'hubSetLeader'].map(action => moves.find(m => m.action === action)).find(Boolean)
-    assert.ok(move)
-    const result = await hall.command('move', { revision: current.state.revision, move })
-    assert.equal(result.ok, true, result.error)
-  }
-  const final = (await host.call('status')).session
-  assert.deepEqual(final.players.map(p => p.role), ['human', 'human', 'ai'])
-  assert.equal(final.state.uiState, 'inScenario')
-  assert.notEqual(final.state.pendingChoice?.kind, 'mulligan')
-  assert.deepEqual(final.state.investigators[2].hand, [])
-  assert.ok(final.state.campaign.investigators[2].deckSize > 0)
-})
-
-test('Arkham four humans: preparation, choices, private tests, round transitions and reconnect', { ...arkham, timeout: 240000 }, async t => {
-  const { halls, relay, relayUrl } = await fixture(t, 4)
-  const created = await halls[0].call('create', { relayUrl, modId: 'arkhamhorror', capacity: 4, fillAi: false, settings: { seed: 'online-arkham-audit' } })
-  assert.equal(created.ok, true, created.error)
-  for (const hall of halls.slice(1)) {
-    assert.equal((await hall.call('join', { relayUrl, code: created.room.code })).ok, true)
-    await hall.call('ready', { ready: true })
-  }
-  assert.equal((await halls[0].command('start')).ok, true)
-  const kinds = new Set(), actors = new Set(), actions = new Set()
-  let help = false, privateTest = false, reconnected = false, peak = 0
-  async function views() {
-    const revision = (await halls[0].call('status')).session.state.revision
-    await waitFor(async () => (await Promise.all(halls.map(h => h.call('status')))).every(v => v.session?.state.revision === revision))
-    const sessions = await Promise.all(halls.map(async h => (await h.call('status')).session))
-    for (const [seat, session] of sessions.entries()) {
-      assert.equal(session.mySeat, seat)
-      assert.equal(session.state.revision, revision)
-      peak = Math.max(peak, Buffer.byteLength(JSON.stringify(session)))
-      for (const inv of session.state.investigators) if (inv.seat !== seat) {
-        assert.deepEqual(inv.hand, [])
-        assert.deepEqual(inv.deck, [])
-        assert.equal(session.state.campaign.investigators[inv.seat]?.deck, undefined)
-      }
-      for (const event of session.events) {
-        assert.ok(event.privateSeat == null || event.privateSeat === seat)
-        for (const inv of (event.tableState || event.presentation?.tableState)?.investigators || []) {
-          if (inv.seat !== seat) assert.deepEqual(inv.hand, [])
-        }
-      }
-      if (!session.actingSeats.includes(seat)) assert.deepEqual(session.state.legalMoves, [])
-    }
-    return sessions
-  }
-  async function act(seat, move, sessions) {
-    const revision = sessions[seat].state.revision
-    // During simultaneous preparation an acting teammate would apply the move to their own seat.
-    const idle = [1, 2, 3].map(offset => (seat + offset) % 4).find(other => !sessions[seat].actingSeats.includes(other))
-    if (idle !== undefined) {
-      const wrong = await halls[idle].command('move', { revision, move })
-      assert.equal(wrong.ok, false, 'another player cannot answer this decision')
-    }
-    const result = await halls[seat].command('move', { revision, move })
-    assert.equal(result.ok, true, `${seat}: ${JSON.stringify(move)}: ${result.error}`)
-    assert.equal(result.session.state.revision, revision + 1)
-    actions.add(move.action); actors.add(seat)
-    // Stay below the public relay's per-connection abuse limit while testing
-    // four snapshot recipients and a rejected spoof before each real action.
-    await new Promise(r => setTimeout(r, 350))
-  }
-  for (let step = 0; step < 240; step++) {
-    const sessions = await views(), seat = sessions[0].decisionSeat
-    const session = sessions[seat ?? 0], st = session.state, moves = st.legalMoves
-    if (step % 20 === 0) console.log(`Arkham audit step=${step} round=${st.round} phase=${st.phase} choice=${st.pendingChoice?.kind} bytes=${peak}`)
-    if (st.uiState === 'scenarioResult' || st.status !== 'playing') break
-    assert.ok(moves.length, `no moves: ${st.uiState}/${st.phase}/${seat}`)
-    let move
-    if (st.pendingChoice) {
-      kinds.add(st.pendingChoice.kind)
-      if (st.skillTest && !st.skillTest.helpRequested) {
-        privateTest = true
-        for (const other of sessions.filter(s => s.mySeat !== st.skillTest.seat)) assert.equal(other.state.skillTest, null)
-      }
-      move = (!help && moves.find(m => m.optionId === 'help')) || moves.find(m => ['done', 'skip', 'pass', 'keep'].includes(m.optionId)) || moves[0]
-      if (move.optionId === 'help') help = true
-      if (!reconnected && seat > 0 && st.pendingChoice.kind === 'commit') {
-        const port = relay.address().port
-        await stop(relay)
-        await waitFor(async () => (await Promise.all(halls.map(h => h.call('status')))).every(v => !v.connected))
-        const replacement = createRelay({ secret: 'integration-test-secret' })
-        await new Promise(r => replacement.listen(port, '127.0.0.1', r))
-        t.after(() => stop(replacement))
-        try {
-          await waitFor(async () => (await Promise.all(halls.map(h => h.call('status')))).every(v => v.connected && v.room.members.every(m => m.online)), 15000)
-        } catch (error) {
-          console.log('Reconnect states', JSON.stringify(await Promise.all(halls.map(async h => { const v = await h.call('status'); return { connected: v.connected, error: v.error, members: v.room?.members, revision: v.session?.state.revision } }))))
-          throw error
-        }
-        const resumed = await views()
-        assert.equal(resumed[seat].state.pendingChoice.id, st.pendingChoice.id)
-        assert.deepEqual(resumed[seat].state.legalMoves, moves)
-        reconnected = true
-      }
-    } else if (st.uiState !== 'inScenario') {
-      move = ['hubGoSetup', 'hubAutoDeck', 'hubDoneSeat', 'hubSelectInvestigator', 'hubBeginScenario', 'hubSetLeader']
-        .map(a => moves.find(m => m.action === a)).find(Boolean)
-    } else {
-      move = (!help || !privateTest ? moves.find(m => m.action === 'investigate') : null)
-        || moves.find(m => m.action === 'endTurn') || moves[0]
-    }
-    assert.ok(move)
-    await act(seat, move, sessions)
-  }
-  assert.equal(actors.size, 4)
-  assert.ok(help, 'another human was asked to help with a test')
-  assert.ok(privateTest, 'private skill test was inspected')
-  assert.ok(reconnected, 'relay restarted during a guest decision')
-  assert.ok(kinds.has('commit'))
-  let final = await views()
-  assert.ok(final[0].state.round >= 4 || final[0].state.uiState === 'scenarioResult')
-  assert.ok(peak < 2 * 1024 * 1024, 'historical animations must not keep growing the wire snapshot')
-  if (final[0].state.uiState === 'scenarioResult') {
-    for (let step = 0; step < 40 && final[0].state.uiState !== 'inScenario' && final[0].state.status === 'playing'; step++) {
-      const seat = final[0].decisionSeat, st = final[seat].state, moves = st.legalMoves
-      const move = st.pendingChoice ? moves.find(m => ['done', 'skip'].includes(m.optionId)) || moves[0]
-        : ['hubContinue', 'hubAutoDeck', 'hubDoneSeat', 'hubSelectInvestigator', 'hubBeginScenario', 'hubSetLeader']
-          .map(a => moves.find(m => m.action === a)).find(Boolean)
-      assert.ok(move, 'campaign continuation must offer an actionable choice')
-      await act(seat, move, final)
-      final = await views()
-    }
-    assert.ok(actions.has('hubContinue'))
-    assert.ok(final[0].state.uiState === 'inScenario' || final[0].state.status !== 'playing', 'interlude finishes for every human seat')
-    assert.ok(final[0].state.campaign.scenarioResults.length > 0)
-  }
-  t.diagnostic(`choice kinds=${[...kinds]}; actions=${[...actions]}; peak snapshot=${peak} bytes; revision=${final[0].state.revision}`)
 })

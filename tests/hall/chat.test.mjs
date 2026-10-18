@@ -407,7 +407,7 @@ test('战术交流与备忘', { timeout: 90000 }, async (t) => {
       assert.equal(deleted.data.session.notes.length, 2)
 
       // 存档里必须带着备忘
-      const saved = JSON.parse(fs.readFileSync(path.join(home, 'boardgame-hall', 'sessions', sessionId + '.json'), 'utf8'))
+      const saved = JSON.parse(fs.readFileSync(path.join(home, 'boardgame-hall', 'sessions', 'gobang', sessionId + '.json'), 'utf8'))
       assert.equal(saved.session.notes.length, 2)
       assert.equal(saved.session.notes.some((note) => note.scope === 'seat' && note.seat === 1), true)
       assert.equal(saved.session.events.some((event) => event.type === 'chat' && event.to === 1), true)

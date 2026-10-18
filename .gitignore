@@ -22,3 +22,6 @@ artifacts/
 # 测试/本地运行用的临时数据目录（DSH_HOME）
 .test-home/
 .tmp-dsh-home/
+
+# 在仓库根目录运行发布版时生成的存档与设置
+user-data/

@@ -12,30 +12,54 @@ const chatNotifications = createChatNotifications({
 })
 let chatToastTimer
 
-// Mod 自带的浏览器模块：由 /api/catalog 下发地址，按需动态加载。
+// Mod 自带的浏览器模块：由 /api/catalog 下发地址，首次打开该游戏（开局、对局、读档）时才加载，
+// 首页不为未打开的游戏下载任何脚本或样式。Mod 样式表只在该游戏处于当前界面时启用。
 // 大厅不静态依赖任何具体桌游的代码；没有该模块时功能自动降级为通用界面。
 const modUis = new Map()
-const modLoading = new Set()
+const modLoading = new Map()
+const modFailed = new Set()
 
 function modUiFor(game) {
   return game ? modUis.get(game.id) || null : null
 }
 
+function modUiPending(game) {
+  return !!game?.web?.client && !modUis.has(game.id) && !modFailed.has(game.id)
+}
+
+/** 返回该游戏的 UI 接口（无自带模块或加载失败时为 null）；重复调用共用同一次加载。 */
 function loadModUi(game) {
-  if (!game || !game.web || !game.web.client || modUis.has(game.id) || modLoading.has(game.id)) return
-  modLoading.add(game.id)
-  if (game.web.styles && !document.querySelector(`link[data-mod="${game.id}"]`)) {
-    document.head.append(h('link', { rel: 'stylesheet', href: game.web.styles, 'data-mod': game.id }))
+  if (!modUiPending(game)) return Promise.resolve(modUiFor(game))
+  if (modLoading.has(game.id)) return modLoading.get(game.id)
+  let stylesLoaded = Promise.resolve()
+  if (game.web.styles && !document.querySelector(`link[data-mod="${CSS.escape(game.id)}"]`)) {
+    const link = h('link', { rel: 'stylesheet', href: game.web.styles, 'data-mod': game.id })
+    // 样式加载失败不阻塞界面，只是缺少主题样式。
+    stylesLoaded = new Promise(resolve => { link.onload = link.onerror = resolve })
+    document.head.append(link)
   }
-  import(game.web.client)
-    .then(module => {
+  const loading = Promise.all([import(game.web.client), stylesLoaded])
+    .then(([module]) => {
       // 宿主能力：DOM 构造、大厅 API、重绘与共享应用状态。Mod 只能用这些接口接入。
       const ui = module.createUI({ h, api, render, state, game, reset, leave, beginInteraction,
         startGame, loadSavedSession, rememberSession, forgetSession, renderOnlineSetup: onlineUi.setupFields })
       modUis.set(game.id, ui)
+      return ui
     })
-    .catch(error => { state.error = '加载「' + game.name + '」界面失败：' + error.message })
+    .catch(error => {
+      modFailed.add(game.id)
+      state.error = '加载「' + game.name + '」界面失败：' + error.message
+      return null
+    })
     .finally(() => { modLoading.delete(game.id); render() })
+  modLoading.set(game.id, loading)
+  return loading
+}
+
+// 用 media 切换而不是 disabled：Chromium 中对尚未加载完的 <link> 设 disabled 会取消下载，
+// 之后再启用也不会重新请求，样式表就永远是空的。
+function activateModStyles(game) {
+  for (const link of document.querySelectorAll('link[data-mod]')) link.media = link.dataset.mod === game?.id ? 'all' : 'not all'
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +230,6 @@ const updatesUi = createUpdatesUI({ h, state, render, request: rawApi, reloadCat
 async function reloadCatalog() {
   try {
     state.catalog = (await api('GET', '/catalog')).games || []
-    for (const game of state.catalog) loadModUi(game)
   } catch (e) { state.error = String(e.message) }
   render()
 }
@@ -357,9 +380,14 @@ function renderApp() {
     if (panel) consoleEl.append(panel)
   }
   if (state.settingsOpen) consoleEl.append(renderSettingsModal())
+  if (state.view === 'library') {
+    const gameCenter = updatesUi.gameCenterModal()
+    if (gameCenter) consoleEl.append(gameCenter)
+  }
   const onlineModal = onlineUi.joinModal()
   if (onlineModal) consoleEl.append(onlineModal)
   const overlayGame = state.setup?.game || (state.view === 'game' && state.catalog.find(game => game.id === state.session?.modId))
+  activateModStyles(overlayGame)
   for (const [id, ui] of modUis) if (id !== overlayGame?.id) ui.onDeactivate?.()
   for (const overlay of modUiFor(overlayGame)?.renderOverlays?.() || []) consoleEl.append(overlay)
   if (state.error && !state.setup) {
@@ -384,26 +412,27 @@ function renderLibrary() {
         '🧠 ' + (cfg.hasKey ? (cfg.model || '已配置') : '未配置模型') + (cfg.hasKey ? '' : '（AI 随机兜底）')
       )
     ),
-    h('div', { className: 'bg-online-entry' }, onlineUi.joinButton()),
+    h('div', { className: 'bg-online-entry' }, onlineUi.joinButton(), updatesUi.gameCenterButton()),
     h('div', { className: 'bg-grid' },
       state.catalog.length === 0
         ? h('div', { className: 'bg-empty' }, '加载中…')
         : state.catalog.map(renderGameCard)
     ),
     h('button', {
-      className: 'bg-settings-btn' + (updatesUi.hasUpdates() ? ' bg-settings-btn-dot' : ''),
-      title: updatesUi.hasUpdates() ? '设置 · 有可用更新' : '设置 · 玩家与 AI',
+      className: 'bg-settings-btn' + (updatesUi.hasHallUpdates() ? ' bg-settings-btn-dot' : ''),
+      title: updatesUi.hasHallUpdates() ? '设置 · 大厅有可用更新' : '设置 · 玩家与 AI',
       onclick: () => { state.settingsOpen = true; render() },
     }, '⚙️')
   )
 }
 
 function renderGameCard(g) {
-  return h('div', { className: 'bg-card', onclick: () => openSetup(g) },
+  const loading = modLoading.has(g.id)
+  return h('div', { className: 'bg-card' + (loading ? ' bg-card-loading' : ''), 'aria-busy': loading ? 'true' : null, onclick: () => openSetup(g) },
     h('div', { className: 'bg-cover', style: { background: g.cover } }, h('span', null, g.coverEmoji)),
     h('div', { className: 'bg-card-meta' },
       h('div', { className: 'bg-card-name' }, g.name),
-      h('div', { className: 'bg-card-players' }, '👥 ' + g.players[0] + '–' + g.players[1] + ' 人'),
+      h('div', { className: 'bg-card-players' }, loading ? '正在加载…' : '👥 ' + g.players[0] + '–' + g.players[1] + ' 人'),
       h('div', { className: 'bg-card-tags' }, (g.tags || []).map((t) => h('span', { className: 'bg-tag' }, t)))
     )
   )
@@ -413,7 +442,14 @@ function renderGameCard(g) {
 // 开局设置
 // ---------------------------------------------------------------------------
 
-function openSetup(game) {
+async function openSetup(game) {
+  if (modUiPending(game)) {
+    const loading = loadModUi(game)
+    render()
+    await loading
+    // 加载期间玩家可能已进入其他界面。
+    if (state.setup || state.view === 'room' || (state.view === 'game' && state.session)) return
+  }
   const form = {}
   for (const s of game.settingsSpec) {
     if (s.type === 'aiList') form[s.key] = (game.defaults[s.key] || []).slice().map((v) => (v == null ? '__random__' : v))
@@ -561,7 +597,7 @@ function renderSettingsModal() {
         tabBtn('model', '🔌 模型连接'),
         tabBtn('online', '🌐 联机'),
         tabBtn('stats', '📊 AI 指标'),
-        tabBtn('updates', '🔄 更新与游戏' + (updatesUi.hasUpdates() ? ' •' : ''))
+        tabBtn('updates', '🔄 大厅更新' + (updatesUi.hasHallUpdates() ? ' •' : ''))
       ),
       tab === 'player' ? renderPlayerTab() : tab === 'online' ? onlineUi.settingsPanel() : tab === 'model' ? renderModelTab()
         : tab === 'updates' ? updatesUi.panel() : (tab === 'stats' ? renderStatsTab() : renderAiList()),
@@ -1141,7 +1177,8 @@ function renderGame(s) {
   // Mod 自带界面优先；大厅只兜底通用的方格棋盘。
   const custom = modUiFor(game)?.renderGame?.(s)
   if (custom) return custom
-  if (s.render && s.render.kind !== 'board') {
+  if (modUiPending(game)) loadModUi(game)
+  if (modUiPending(game) || (s.render && s.render.kind !== 'board')) {
     return h('div', { className: 'bg-empty' }, '正在加载「' + s.modName + '」的界面…')
   }
   const over = s.state.status !== 'playing'
@@ -1656,7 +1693,6 @@ async function boot() {
     state.catalog = g.games || []
     state.ais = a.ais || []
     state.config = c
-    for (const game of state.catalog) loadModUi(game)
     updatesUi.boot()
     // 刷新 / 服务端重启后自动回到上一局（服务端已把对局落盘）
     await onlineUi.boot()

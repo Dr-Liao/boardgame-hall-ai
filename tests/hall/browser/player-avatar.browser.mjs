@@ -3,13 +3,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createServer } from '../../../lib/server.js'
-import { loadMods } from '../../../lib/mods.js'
+import { loadTestMods } from '../helpers/mods.mjs'
 
-test('玩家头像：上传预览、错误处理、保存刷新、棋盘与诡镇局内显示、恢复默认', async ({ page }) => {
+test('玩家头像：上传预览、错误处理、保存刷新、棋盘局内显示、恢复默认', async ({ page }) => {
   const previousHome = process.env.DSH_HOME
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-avatar-ui-'))
   process.env.DSH_HOME = home
-  const server = createServer({ mods: await loadMods() })
+  const server = createServer({ mods: await loadTestMods() })
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   try {
@@ -66,20 +66,6 @@ test('玩家头像：上传预览、错误处理、保存刷新、棋盘与诡�
     await page.locator('.bg-chat-send').click()
     await expect(page.locator('.bg-chat-msg-me .bg-chat-avatar img')).toHaveAttribute('src', avatar)
 
-    if (fs.existsSync(new URL('../../../games/arkhamhorror/index.js', import.meta.url))) {
-      const arkham = await call('/start', { modId: 'arkhamhorror', settings: { legacyAutoStart: true, playerCount: 1, playerInvestigator: '01001', seed: 'avatar-test' } })
-      expect(arkham.ok, arkham.error).toBe(true)
-      await page.evaluate(id => localStorage.setItem('boardgame-hall.sessionId', id), arkham.session.sessionId)
-      await page.reload()
-      const skip = page.getByRole('button', { name: '跳过演出' })
-      await skip.click()
-      await expect(page.locator('.ah-dock-kicker .ah-player-avatar')).toHaveAttribute('src', avatar)
-      await expect(page.locator('.ah-dock-kicker .ah-player-avatar')).toBeVisible()
-      await expect.poll(() => page.locator('.ah-dock-kicker .ah-player-avatar').evaluate(el => el.naturalWidth)).toBe(256)
-      await page.screenshot({ path: 'artifacts/player-avatar-arkham.png' })
-    }
-
-    await page.getByLabel('对局菜单', { exact: true }).click()
     await page.getByRole('button', { name: '退出', exact: true }).click()
     await openSettings()
     await page.getByRole('button', { name: '恢复默认', exact: true }).click()

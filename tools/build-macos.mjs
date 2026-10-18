@@ -1,12 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { zipDirectory } from '../lib/zip.js'
+import { shipsFile, stageGames } from './release/stage-games.mjs'
 
 const toolsDir = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.dirname(toolsDir)
@@ -14,14 +14,12 @@ const args = new Set(process.argv.slice(2))
 const option = name => process.argv.slice(2).find(value => value.startsWith(name + '='))?.slice(name.length + 1)
 const archOption = option('--arch') || 'all'
 const skipZip = args.has('--skip-zip')
-// 纯大厅版（--hall-only）：只内置 bundledGames，其他游戏从游戏商店安装；edition.json 让自动更新也跳过它们。
+// 纯大厅版（--hall-only）：只内置 package.json 的 boardgame.liteGames，其他游戏从游戏商店安装；
+// edition.json 让自动更新也跳过它们。游戏暂存与资源包拆分见 tools/release/stage-games.mjs。
 const hallOnly = args.has('--hall-only')
-const bundledGames = ['gobang', 'ox']
 const nodeVersion = option('--node-version') || process.versions.node
 const supportedArchitectures = archOption === 'all' ? ['arm64', 'x64'] : [archOption]
 const stamp = formatStamp(new Date())
-const cardImagePattern = /^games\/arkhamhorror\/web\/img\/(zh\/)?cards\//
-const cardInventoryPattern = /^(zh\/)?cards\//
 const rootPackage = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'))
 const hallVersion = rootPackage.version
 if (!/^\d+\.\d+\.\d+$/.test(hallVersion)) throw new Error('package.json 的 version 必须是 x.y.z。')
@@ -49,19 +47,20 @@ async function build(arch) {
     fs.mkdirSync(runtimeRoot, { recursive: true })
 
     copyRuntimeFiles(appRoot)
-    if (!hallOnly) writeLogicInventory(appRoot)
+    // macOS 只发程序包；资源包由 Windows 构建产出，两个平台通用。
+    const staged = await stageGames({ appRoot, lite: hallOnly })
     fs.copyFileSync(path.join(projectRoot, 'server.js'), path.join(appRoot, 'server.js'))
     fs.copyFileSync(path.join(toolsDir, 'windows', 'portable.mjs'), path.join(appRoot, 'portable.mjs'))
     fs.writeFileSync(path.join(appRoot, 'package.json'), JSON.stringify({
       name: 'dsh-boardgame-hall', version: hallVersion, private: true, type: 'module', boardgame: rootPackage.boardgame,
     }, null, 2))
     fs.writeFileSync(path.join(releaseRoot, 'current.ini'), `app=${appDirName}\nruntime=${runtimeDirName}\n`)
-    if (hallOnly) fs.writeFileSync(path.join(releaseRoot, 'edition.json'), JSON.stringify({ edition: 'hall-only', games: bundledGames }, null, 2))
+    if (hallOnly) fs.writeFileSync(path.join(releaseRoot, 'edition.json'), JSON.stringify({ edition: 'hall-only', games: staged.games.map(game => game.id) }, null, 2))
 
     await installNodeRuntime(runtimeRoot, arch)
     writeLauncher(releaseRoot)
-    writeInstructions(releaseRoot, arch)
-    verifyRelease(releaseRoot, appRoot)
+    writeInstructions(releaseRoot, arch, staged)
+    verifyRelease(releaseRoot)
     writeManifest(releaseRoot, arch)
 
     if (!skipZip) {
@@ -80,55 +79,15 @@ async function build(arch) {
 }
 
 function copyRuntimeFiles(appRoot) {
-  for (const folder of ['lib', 'public', 'games']) {
-    const sourceRoot = path.join(projectRoot, folder)
-    walk(sourceRoot, file => {
+  for (const folder of ['lib', 'public']) {
+    walk(path.join(projectRoot, folder), file => {
       const relative = path.relative(projectRoot, file).replaceAll('\\', '/')
-      if (/\/(tests|test-results|tools|docs|Develop|develop|sessions|user-data|node_modules)\//.test('/' + relative)) return
-      if (/\/audit\//.test('/' + relative)) return
-      if (/(^|\/)\.git(\/|$)|(^|\/)\.git(ignore|modules|attributes)$/.test(relative)) return
-      if (/(^|\/)(boardgame\.config\.json|ais\.json|decisions\.jsonl)$|\.(log|tmp|bak|md)$/i.test(relative)) return
-      if (cardImagePattern.test(relative)) return
-      const game = /^games\/([^/]+)\//.exec(relative)?.[1]
-      if (hallOnly && game && !bundledGames.includes(game)) return
+      if (!shipsFile(relative)) return
       const destination = path.join(appRoot, relative)
       fs.mkdirSync(path.dirname(destination), { recursive: true })
       fs.copyFileSync(file, destination)
     })
   }
-}
-
-function writeLogicInventory(appRoot) {
-  const imageRoot = path.join(projectRoot, 'games', 'arkhamhorror', 'web', 'img')
-  const sourcePath = path.join(projectRoot, 'games', 'arkhamhorror', 'audit', 'local-images.json')
-  if (!fs.existsSync(sourcePath)) return
-  const source = JSON.parse(fs.readFileSync(sourcePath, 'utf8'))
-  const files = (source.files || []).filter(relative =>
-    !cardInventoryPattern.test(relative) && fs.existsSync(path.join(imageRoot, relative)))
-  let bytes = 0
-  let zh = 0
-  const lines = files.map(relative => {
-    const length = fs.statSync(path.join(imageRoot, relative)).size
-    bytes += length
-    if (relative.startsWith('zh/')) zh++
-    return `${relative}:${length}`
-  })
-  const inventory = {
-    schemaVersion: 1,
-    host: source.host,
-    scope: source.scope,
-    languages: source.languages || [],
-    package: 'logic',
-    total: files.length,
-    bytes,
-    byLanguage: { en: files.length - zh, zh },
-    fingerprint: createHash('sha256').update(lines.join('\n')).digest('hex'),
-    note: source.note,
-    files,
-  }
-  const destination = path.join(appRoot, 'games', 'arkhamhorror', 'audit', 'local-images.json')
-  fs.mkdirSync(path.dirname(destination), { recursive: true })
-  fs.writeFileSync(destination, JSON.stringify(inventory, null, 2))
 }
 
 async function installNodeRuntime(runtimeRoot, arch) {
@@ -161,16 +120,19 @@ function writeLauncher(releaseRoot) {
   fs.chmodSync(destination, 0o755)
 }
 
-function writeInstructions(releaseRoot, arch) {
+function writeInstructions(releaseRoot, arch, staged) {
   const architectureName = arch === 'arm64' ? 'Apple 芯片（M1/M2/M3/M4 及后续型号）' : 'Intel 芯片'
-  const games = hallOnly
-    ? `6. 本版只内置五子棋和井字棋。诡镇奇谈等其他游戏可在“设置 → 更新与游戏”中从游戏商店安装，下载到 user-data 文件夹。
-7. 自动更新：在“设置 → 更新与游戏”中可一键更新大厅；更新时只下载变化的文件，并保持纯大厅版。
-   重启后切换，启动失败会自动回滚到上一版本。存档与设置始终保留在 user-data。`
-    : `6. 本包不含诡镇奇谈卡牌图片；联网时自动加载，离线时以文字显示。
-   如需离线卡图，请将 BoardgameHall-ArkhamCards 资源包解压到本文件夹并合并 app 文件夹；大厅启动时会自动并入当前版本。
-7. 自动更新：在“设置 → 更新与游戏”中可一键更新大厅、安装或更新游戏；新版本准备到旁边的 app-版本号 文件夹（只下载变化的文件），
-   重启后切换，启动失败会自动回滚到上一版本。存档与设置始终保留在 user-data。`
+  const names = staged.games.map(game => game.name).join('、')
+  const notes = hallOnly ? [
+    `本版只内置${names}。其他游戏可在大厅的“游戏中心”中安装，下载到 user-data 文件夹。`,
+    `自动更新：在“设置 → 大厅更新”中可一键更新大厅；更新时只下载变化的文件，并保持纯大厅版。
+   重启后切换，启动失败会自动回滚到上一版本。存档与设置始终保留在 user-data。`,
+  ] : [
+    ...staged.notes,
+    `自动更新：在“设置 → 大厅更新”中可一键更新大厅，在大厅的“游戏中心”中安装或更新游戏；新版本准备到旁边的 app-版本号 文件夹（只下载变化的文件），
+   重启后切换，启动失败会自动回滚到上一版本。存档与设置始终保留在 user-data。`,
+  ]
+  const games = notes.map((note, index) => `${index + 6}. ${note}`).join('\n')
   const instructions = `桌游大厅 · macOS ${arch} 免安装版${hallOnly ? '（纯大厅）' : ''}
 
 适用机型：${architectureName}
@@ -189,7 +151,7 @@ ${games}
   fs.writeFileSync(path.join(releaseRoot, '使用说明.txt'), instructions)
 }
 
-function verifyRelease(releaseRoot, appRoot) {
+function verifyRelease(releaseRoot) {
   const files = listFiles(releaseRoot)
   const forbidden = files.filter(file => {
     const relative = path.relative(releaseRoot, file).replaceAll('\\', '/')
@@ -198,8 +160,6 @@ function verifyRelease(releaseRoot, appRoot) {
       || /\.(log|tmp|bak)$/i.test(relative)
   })
   if (forbidden.length) throw new Error('发布包检查失败：包含个人数据文件。')
-  const leakedCards = files.filter(file => cardImagePattern.test(path.relative(appRoot, file).replaceAll('\\', '/')))
-  if (leakedCards.length) throw new Error('逻辑包检查失败：包含诡镇奇谈卡牌图片。')
 }
 
 function writeManifest(releaseRoot, arch) {
@@ -215,7 +175,7 @@ function writeManifest(releaseRoot, arch) {
     launcher: '桌游大厅.command',
     bundledSaves: false,
     bundledPersonalConfig: false,
-    bundledArkhamCardImages: false,
+    bundledAssetPacks: [],
     files: listFiles(releaseRoot).map(file => path.relative(releaseRoot, file).replaceAll('\\', '/')),
   }
   fs.writeFileSync(path.join(releaseRoot, 'build-manifest.json'), JSON.stringify(manifest, null, 2))

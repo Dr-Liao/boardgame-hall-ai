@@ -128,6 +128,7 @@ test('大厅对局持久化（存档 / 恢复 / 隔离 / 清理）', { timeout: 
     const session = { sessionId: 'bg-test-1', modId: 'gobang', modName: '五子棋', players: [], state: { status: 'playing', revision: 0 }, settings: {}, events: [] }
     const { saveSnapshot } = await import('../../lib/sessions.js')
     saveSnapshot(session, { resourceVersion: null })
+    assert.equal(snapshotPath('bg-test-1'), path.join(sessionsDir(), 'gobang', 'bg-test-1.json'), '存档必须放在所属游戏的子目录')
     assert.equal(fs.existsSync(snapshotPath('bg-test-1')), true)
     assert.equal(readSnapshots().length, 1)
     assert.equal(deleteSnapshot('bg-test-1'), true)
@@ -145,6 +146,25 @@ test('大厅对局持久化（存档 / 恢复 / 隔离 / 清理）', { timeout: 
     // 路径穿越必须被拒绝
     assert.throws(() => snapshotPath('../../etc/passwd'))
     assert.throws(() => snapshotPath('a/b'))
+  })
+
+  await t.test('旧版根目录存档自动迁移到游戏子目录', async () => {
+    const { saveSnapshot } = await import('../../lib/sessions.js')
+    const session = { sessionId: 'bg-legacy-1', modId: 'gobang', modName: '五子棋', players: [], state: { status: 'playing', revision: 0 }, settings: {}, events: [] }
+    const legacy = path.join(sessionsDir(), 'bg-legacy-1.json')
+    fs.mkdirSync(sessionsDir(), { recursive: true })
+    fs.writeFileSync(legacy, JSON.stringify({ schema: 1, savedAt: new Date().toISOString(), resourceVersion: null, session }), 'utf8')
+    assert.equal(snapshotPath('bg-legacy-1'), legacy, '迁移前仍能按编号找到旧存档')
+
+    assert.deepEqual(readSnapshots().map(record => record.session.sessionId), ['bg-legacy-1'])
+    assert.equal(fs.existsSync(legacy), false, '旧存档必须移出根目录')
+    assert.equal(snapshotPath('bg-legacy-1'), path.join(sessionsDir(), 'gobang', 'bg-legacy-1.json'))
+
+    fs.writeFileSync(legacy, fs.readFileSync(snapshotPath('bg-legacy-1')))
+    saveSnapshot(session, {})
+    assert.equal(fs.existsSync(legacy), false, '写入新位置后必须清掉旧位置的副本')
+    assert.equal(deleteSnapshot('bg-legacy-1'), true)
+    assert.equal(fs.existsSync(path.join(sessionsDir(), 'gobang', 'bg-legacy-1.json')), false)
   })
 
   await t.test('损坏存档被隔离，不影响大厅启动与其它对局', async () => {

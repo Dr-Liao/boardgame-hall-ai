@@ -1,7 +1,7 @@
 {
   "name": "dsh-boardgame-hall",
   "description": "独立桌游大厅：自带端口 + 网页 + AI 扮演规则 + 桌游 Mod 插件系统",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "engines": {
     "node": ">=22.15.0"
@@ -9,7 +9,8 @@
   "main": "server.js",
   "boardgame": {
     "repo": "Dr-Liao/boardgame-hall-ai",
-    "registry": "https://raw.githubusercontent.com/Dr-Liao/boardgame-hall-ai/main/registry/index.json"
+    "registry": "https://raw.githubusercontent.com/Dr-Liao/boardgame-hall-ai/main/registry/index.json",
+    "liteGames": ["gobang", "ox"]
   },
   "workspaces": [
     "games/*"
@@ -34,18 +35,9 @@
     "test": "npm run test:hall && npm run test:mods",
     "test:hall": "node --test tests/hall/*.test.mjs",
     "test:mods": "npm test --workspaces --if-present",
-    "test:arkham": "npm test -w games/arkhamhorror",
-    "test:arkham:fast": "npm run test:fast -w games/arkhamhorror",
-    "test:arkham:slow": "npm run test:slow -w games/arkhamhorror",
-    "test:arkham:assets": "npm run test:assets -w games/arkhamhorror",
-    "test:arkham:all": "npm run test:all -w games/arkhamhorror",
-    "test:arkham:node": "npm run test:node -w games/arkhamhorror",
-    "test:arkham:browser": "npm run test:browser -w games/arkhamhorror",
+    "test:mod": "node tools/test-mod.mjs",
     "test:hall:browser": "playwright test --config tests/hall/playwright.config.mjs",
-    "pretest:hall:browser": "node tools/require-playwright-browsers.mjs",
-    "pretest:arkham:browser": "node tools/require-playwright-browsers.mjs",
-    "test:p7": "npm run test:p7 -w games/arkhamhorror",
-    "test:release": "npm run test:release -w games/arkhamhorror"
+    "pretest:hall:browser": "node tools/require-playwright-browsers.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

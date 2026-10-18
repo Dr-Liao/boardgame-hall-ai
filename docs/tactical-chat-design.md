@@ -576,7 +576,7 @@ totals.chatCompacted     被压缩掉的备忘条数
 ### 18.4 回归
 
 - `npm test` 全绿（当前 19 + 199 = 218 项）；
-- `npm run test:arkham` 不受影响（本设计**零 Mod 改动**，但 `buildSystemPrompt` 签名变化需确认所有调用点）。
+- `npm run test:mod -- arkhamhorror` 不受影响（本设计**零 Mod 改动**，但 `buildSystemPrompt` 签名变化需确认所有调用点）。
 
 ---
 

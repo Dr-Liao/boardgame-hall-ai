@@ -5,18 +5,28 @@
 
 ## 命令
 
+大厅 `package.json` 不再为每个游戏登记命令；游戏自己的脚本统一用 `npm run test:mod -- <游戏 id> [脚本]` 转发，
+脚本写 `fast` 时先找 `test:fast`。不带脚本名运行 `npm run test:mod -- arkhamhorror nope` 可列出该游戏的全部测试脚本。
+
 | 命令 | 覆盖 | 实测耗时（Windows / node 22） |
 | --- | --- | --- |
-| `npm run test:arkham:fast` | 规则、AI、卡牌逻辑 | 约 8 秒 |
-| `npm run test:arkham:assets` | 卡池导入、展示资源、媒体许可、BGM 分配 | 约 30 秒 |
-| `npm run test:arkham:slow` | 整局模拟、存读档迁移 | 约 2 分钟 |
-| `npm run test:arkham` | 全量（默认入口，每个文件独立进程并行） | 约 2.5 分钟（实测 154 秒） |
-| `npm run test:arkham:all` | 同 `test:arkham`，语义更明确的别名 | 约 2.5 分钟 |
-| `npm run test:arkham:node` | 全量，单进程串行（排查顺序依赖时用） | 约 5.5 分钟 |
+| `npm run test:mod -- arkhamhorror fast` | 规则、AI、卡牌逻辑 | 约 8 秒 |
+| `npm run test:mod -- arkhamhorror assets` | 卡池导入、展示资源、媒体许可、BGM 分配 | 约 30 秒 |
+| `npm run test:mod -- arkhamhorror slow` | 整局模拟、存读档迁移、大厅联机集成（含四人长跑） | 约 2 分钟以上 |
+| `npm run test:mod -- arkhamhorror` | 全量（默认入口，每个文件独立进程并行） | 约 2.5 分钟（实测 154 秒） |
+| `npm run test:mod -- arkhamhorror node` | 全量，单进程串行（排查顺序依赖时用） | 约 5.5 分钟 |
+| `npm run test:hall` | 大厅回归，只依赖五子棋、井字棋和 `tests/fixtures/mods/` 下的测试专用 Mod | 约 10 秒 |
 | `npm run test:hall:browser` | 大厅浏览器回归（复用系统 Edge） | 约 7 秒/用例 |
-| `npm run test:arkham:browser` | 诡镇浏览器回归（复用系统 Edge） | 视用例而定 |
+| `npm run test:mod -- arkhamhorror browser` | 诡镇浏览器回归，含诡镇在大厅开局与联机界面上的用例（复用系统 Edge） | 视用例而定 |
 
 手工验证单个文件最快：`cd games/arkhamhorror && node --test tests/ai-dialogue.test.mjs`（0.1 秒）。
+
+## 大厅回归与游戏回归的边界
+
+大厅回归验证的是 Mod 契约，而不是某个游戏：多人席位、私有手牌、同时行动、批量确认、存档兼容等能力都由
+`tests/fixtures/mods/fixture-cards` 提供，新增或移除 `games/` 下的游戏不会影响 `npm run test:hall`。
+某个游戏在大厅上的集成表现（如诡镇的四人联机、换牌界面、存档管理页）放在游戏自己的仓库里，
+例如 `games/arkhamhorror/tests/hall-online.test.mjs`、`hall-online.browser.mjs` 与 `hall-setup.browser.mjs`。
 
 ## 分层怎么维护
 
@@ -56,6 +66,6 @@ npm run test:assets
 ## 浏览器回归
 
 两个 `playwright.config.mjs` 都用 `channel: 'msedge'`，即复用系统 Edge，**不下载** Playwright 内核，
-所以不需要 `npx playwright install`。`tools/require-playwright-browsers.mjs` 挂在 `test:hall:browser` /
-`test:arkham:browser` 的 `pre` 钩子上，会先真启动一次浏览器；通道不可用时在跑用例之前就给出可照做的提示，
+所以不需要 `npx playwright install`。`tools/require-playwright-browsers.mjs` 挂在大厅 `test:hall:browser` 与
+诡镇 `test:browser` 的 `pre` 钩子上，会先真启动一次浏览器；通道不可用时在跑用例之前就给出可照做的提示，
 而不是等 webServer 起来才抛一屏 stack trace。

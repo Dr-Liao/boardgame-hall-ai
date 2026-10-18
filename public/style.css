@@ -52,6 +52,7 @@ body {
   transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }
 .bg-card:hover { transform: translateY(-4px); border-color: rgba(255,255,255,.25); box-shadow: 0 12px 34px rgba(0,0,0,.5); }
+.bg-card-loading { cursor: progress; opacity: .75; }
 .bg-cover { position: relative; height: 180px; display: flex; align-items: center; justify-content: center; font-size: 56px; }
 .bg-cover::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, rgba(0,0,0,.35)); }
 .bg-card-meta { padding: 12px 14px 14px; }
@@ -128,7 +129,12 @@ textarea.bg-input { resize: vertical; min-height: 54px; line-height: 1.5; font-f
 .bg-advanced .bg-sec:first-of-type { margin-top: 14px; }
 .bg-advanced .bg-field { margin-bottom: 10px; }
 
-/* ---------------- 设置 · 更新与游戏 ---------------- */
+/* ---------------- 设置 · 大厅更新 / 游戏中心 ---------------- */
+.bg-game-center-btn { position: relative; }
+.bg-game-center-btn-dot::after {
+  content: ''; position: absolute; top: -4px; right: -4px; width: 10px; height: 10px;
+  border-radius: 50%; background: #ff5a6a; border: 2px solid var(--bg-1);
+}
 .bg-upd-line { font-size: 14px; margin-bottom: 6px; }
 .bg-upd-card { margin: 10px 0; padding: 12px; border: 1px solid rgba(91,140,255,.4); border-radius: 10px; background: rgba(91,140,255,.08); display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
 .bg-upd-title { font-weight: 700; font-size: 14px; }
@@ -339,7 +345,7 @@ a.bg-btn { display: inline-block; text-decoration: none; }
 .bg-chat-error { font-size: 12px; color: #ffc2c8; line-height: 1.5; }
 .bg-chat-notice { font-size: 12px; color: #bff0e0; line-height: 1.5; }
 /* Online rooms use the hall's existing controls and palette. */
-.bg-online-entry { padding: 16px 28px 0; }
+.bg-online-entry { padding: 16px 28px 0; display: flex; flex-wrap: wrap; gap: 10px; }
 .bg-seat-setup { margin: 18px 0 6px; }
 .bg-play-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: #0d1424; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 20px; }
 .bg-play-modes button { border: 0; background: transparent; color: var(--text-dim); padding: 10px; border-radius: 8px; font: inherit; cursor: pointer; }
