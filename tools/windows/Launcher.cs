@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Text;
 
 // 免安装版启动器（协议 2）。目录布局与 current.ini 字段见 lib/install.js。
@@ -58,7 +59,7 @@ internal static class Launcher
     {
         var start = new ProcessStartInfo {
             FileName = Path.Combine(root, runtimeDir, "node.exe"),
-            Arguments = "\"" + Path.Combine(root, appDir, "portable.mjs") + "\"",
+            Arguments = "--disable-warning=UNDICI-EHPA \"" + Path.Combine(root, appDir, "portable.mjs") + "\"",
             WorkingDirectory = Path.Combine(root, appDir),
             UseShellExecute = false
         };
@@ -66,11 +67,38 @@ internal static class Launcher
         start.EnvironmentVariables["DSH_HOME"] = Path.Combine(root, "user-data");
         start.EnvironmentVariables["BOARDGAME_INSTALL_ROOT"] = root;
         start.EnvironmentVariables["BOARDGAME_LAUNCHER"] = Protocol;
+        ApplySystemProxy(start.EnvironmentVariables);
         using (var child = Process.Start(start))
         {
             child.WaitForExit();
             return child.ExitCode;
         }
+    }
+
+    // Node 的 fetch 不读 Windows 系统代理（Clash、v2rayN 等的“系统代理”模式），
+    // 只认 HTTPS_PROXY 等环境变量，且要 NODE_USE_ENV_PROXY=1（Node 22.21+）才生效。
+    private static void ApplySystemProxy(System.Collections.Specialized.StringDictionary env)
+    {
+        string[] keys = { "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy" };
+        if (!keys.Any(key => !string.IsNullOrEmpty(env[key])))
+        {
+            try
+            {
+                var target = new Uri("https://raw.githubusercontent.com/");
+                Uri proxy = WebRequest.GetSystemWebProxy().GetProxy(target);
+                if (proxy == null || proxy == target || proxy.Host == target.Host) return;
+                string address = "http://" + proxy.Authority;
+                env["HTTPS_PROXY"] = address;
+                env["HTTP_PROXY"] = address;
+                if (string.IsNullOrEmpty(env["NO_PROXY"]) && string.IsNullOrEmpty(env["no_proxy"])) env["NO_PROXY"] = "localhost,127.0.0.1,::1";
+                Console.WriteLine("  使用系统代理：" + address);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+        }
+        if (string.IsNullOrEmpty(env["NODE_USE_ENV_PROXY"])) env["NODE_USE_ENV_PROXY"] = "1";
     }
 
     private static bool Resolve(string root, out string appDir, out string runtimeDir)

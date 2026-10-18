@@ -55,6 +55,23 @@ rollback() {
   printf 'app=%s\nruntime=%s\nfailed=%s\n' "$previous" "$previous_runtime" "$failed" > "$POINTER.tmp" && mv -f "$POINTER.tmp" "$POINTER"
 }
 
+# Node 的 fetch 不读 macOS 系统代理，只认 HTTPS_PROXY 等环境变量，且要 NODE_USE_ENV_PROXY=1（Node 22.21+）才生效。
+apply_system_proxy() {
+  if [ -z "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}" ] && command -v scutil >/dev/null 2>&1; then
+    local address
+    address="$(scutil --proxy 2>/dev/null | awk '
+      $1 == "HTTPSEnable" { enabled = $3 } $1 == "HTTPSProxy" { host = $3 } $1 == "HTTPSPort" { port = $3 }
+      END { if (enabled == "1" && host != "" && port != "") print "http://" host ":" port }')"
+    if [ -n "$address" ]; then
+      export HTTPS_PROXY="$address" HTTP_PROXY="$address"
+      [ -n "${NO_PROXY:-}${no_proxy:-}" ] || export NO_PROXY="localhost,127.0.0.1,::1"
+      echo "  使用系统代理：$address"
+    fi
+  fi
+  [ -n "${NODE_USE_ENV_PROXY:-}" ] || export NODE_USE_ENV_PROXY=1
+}
+apply_system_proxy
+
 restarts=0
 rolled_back=0
 while true; do
@@ -64,7 +81,7 @@ while true; do
     exit 1
   fi
   export DSH_HOME="$ROOT/user-data" BOARDGAME_INSTALL_ROOT="$ROOT" BOARDGAME_LAUNCHER=2
-  (cd "$ROOT/$APP_DIR" && "$ROOT/$RUNTIME_DIR/$NODE_NAME" portable.mjs)
+  (cd "$ROOT/$APP_DIR" && "$ROOT/$RUNTIME_DIR/$NODE_NAME" --disable-warning=UNDICI-EHPA portable.mjs)
   STATUS=$?
   if [ "$STATUS" -eq 75 ] && [ "$restarts" -lt 20 ]; then
     restarts=$((restarts + 1))

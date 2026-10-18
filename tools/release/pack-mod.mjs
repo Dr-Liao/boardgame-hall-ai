@@ -19,6 +19,7 @@ import { zipDirectory, listFiles } from '../../lib/zip.js'
 import { signEnvelope, verifyEnvelope, loadTrustedKeys } from '../../lib/signing.js'
 import { validateModRelease, MOD_RELEASE_FILE } from '../../lib/store.js'
 import { buildIndex, indexFileName } from '../../lib/delta.js'
+import { modExcludeMatcher } from '../../lib/install.js'
 
 const argv = process.argv.slice(2)
 const option = name => argv.find(value => value.startsWith(name + '='))?.slice(name.length + 1)
@@ -31,11 +32,8 @@ if (tag.replace(/^v/, '') !== version) throw new Error(`tag ${tag} 与 boardgame
 const privateKey = option('--key-file') ? fs.readFileSync(option('--key-file'), 'utf8') : process.env.BOARDGAME_UPDATE_PRIVATE_KEY
 if (!privateKey) throw new Error('缺少签名私钥：设置 BOARDGAME_UPDATE_PRIVATE_KEY 或传 --key-file')
 
-const exclude = ['.git/', '.github/', 'node_modules/', '.gitignore', '.gitattributes', '.gitmodules']
-  .concat(Array.isArray(manifest.exclude) ? manifest.exclude : [])
-const excluded = relative => exclude.some(pattern => pattern.startsWith('*.')
-  ? relative.toLowerCase().endsWith(pattern.slice(1).toLowerCase())
-  : relative === pattern.replace(/\/$/, '') || relative.startsWith(pattern.endsWith('/') ? pattern : pattern + '/'))
+const excluded = modExcludeMatcher(['.git/', '.github/', 'node_modules/', '.gitignore', '.gitattributes', '.gitmodules']
+  .concat(Array.isArray(manifest.exclude) ? manifest.exclude : []))
 
 const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'boardgame-mod-'))
 try {

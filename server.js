@@ -42,9 +42,9 @@ async function startHall() {
 
   // 扫描 games/ 与已下载的游戏目录，把每个桌游当做一个独立 Mod 插件加载进来。
   const mods = await loadMods()
-  const { repo, registry } = readReleaseConfig()
-  const updater = createUpdater({ repo, install })
-  const store = createStore({ mods, registryUrl: registry })
+  const { repo, registry, gitee } = readReleaseConfig()
+  const updater = createUpdater({ repo, giteeRepo: gitee, install })
+  const store = createStore({ mods, registryUrl: registry, gitee: repo && gitee ? { [repo]: gitee } : {} })
   store.cleanup()
 
   let server
@@ -95,9 +95,9 @@ async function startHall() {
 function readReleaseConfig() {
   try {
     const pkg = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
-    return { repo: pkg.boardgame?.repo || null, registry: pkg.boardgame?.registry || null }
+    return { repo: pkg.boardgame?.repo || null, registry: pkg.boardgame?.registry || null, gitee: pkg.boardgame?.gitee || null }
   } catch {
-    return { repo: null, registry: null }
+    return { repo: null, registry: null, gitee: null }
   }
 }
 

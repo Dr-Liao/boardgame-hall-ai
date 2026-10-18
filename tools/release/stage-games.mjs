@@ -5,6 +5,7 @@
 //     assetPacks     [{ id, title, paths: string[], readme?: string[] }]
 //                    paths 是相对游戏目录的前缀（如 "web/img/cards/"）；这些文件不进程序包，
 //                    只在构建资源包时复制到 BoardgameHall-<Id 转大驼峰>-<时间戳>/app/games/<游戏>/
+//     exclude        string[]  与游戏商店包相同的排除规则；资源包 paths 优先分拣，其余命中的文件不进程序包
 //     portableNotes  string[]  追加到免安装包「使用说明.txt」的条目
 //     prepack        string    与游戏商店打包同一脚本：程序包调用 `node <prepack> <暂存游戏目录>`，
 //                              资源包调用 `node <prepack> <资源包内游戏目录> --asset-pack=<id>`
@@ -16,7 +17,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { readModManifest } from '../../lib/install.js'
+import { readModManifest, modExcludeMatcher } from '../../lib/install.js'
 
 const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -104,6 +105,7 @@ export async function stageGames({ root = projectRoot, appRoot = null, assetsDir
     const manifest = readModManifest(gameDir)
     const packs = validatePacks(entry.name, manifest)
     const packOf = relative => packs.find(pack => pack.paths.some(prefix => relative.startsWith(prefix)))
+    const excluded = modExcludeMatcher(manifest?.exclude)
     const staged = packs.map(pack => ({ pack, root: assetsDir ? path.join(assetsDir, packDirName(pack, stamp)) : null, files: [] }))
     walk(gameDir, file => {
       const relative = path.relative(gameDir, file).replaceAll('\\', '/')
@@ -114,7 +116,7 @@ export async function stageGames({ root = projectRoot, appRoot = null, assetsDir
         if (!target.root) return
         copy(file, path.join(target.root, 'app', 'games', entry.name, relative))
         target.files.push(relative)
-      } else if (appRoot) {
+      } else if (appRoot && !excluded(relative)) {
         copy(file, path.join(appRoot, 'games', entry.name, relative))
       }
     })

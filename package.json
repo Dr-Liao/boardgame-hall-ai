@@ -9,6 +9,7 @@
   "main": "server.js",
   "boardgame": {
     "repo": "Dr-Liao/boardgame-hall-ai",
+    "gitee": "drliao/boardgame-hall-ai",
     "registry": "https://raw.githubusercontent.com/Dr-Liao/boardgame-hall-ai/main/registry/index.json",
     "liteGames": ["gobang", "ox"]
   },

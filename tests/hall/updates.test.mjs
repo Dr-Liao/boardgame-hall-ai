@@ -13,6 +13,7 @@ import { readPointer, writePointer, markHealthy, cleanupInstall, mergeLooseAppFo
 import { createUpdater, platformKey } from '../../lib/updater.js'
 import { buildIndex, indexFileName } from '../../lib/delta.js'
 import { createStore } from '../../lib/store.js'
+import { giteeUrl, fetchText, fetchRange, downloadVerified } from '../../lib/update-common.js'
 import { loadMods } from '../../lib/mods.js'
 import { createServer } from '../../lib/server.js'
 import gobang from '../../games/gobang/index.js'
@@ -121,6 +122,46 @@ test('签名清单：可信公钥通过，篡改、陌生公钥与未配置公�
   assert.throws(() => verifyEnvelope(JSON.stringify(tampered), trusted), /签名无效/)
   assert.throws(() => verifyEnvelope(text, other.trusted), /签名无效/)
   assert.throws(() => verifyEnvelope(text, []), /公钥/)
+})
+
+test('Gitee 镜像：地址换算，按 Gitee → GitHub → 加速镜像取文件，内容无效换来源，分段下载跳过 Gitee', async t => {
+  const gitee = { 'Me/Hall': 'me-cn/hall' }
+  assert.equal(giteeUrl('https://github.com/me/hall/releases/latest/download/update-manifest.json', gitee), 'https://gitee.com/me-cn/hall/releases/download/latest/update-manifest.json')
+  assert.equal(giteeUrl('https://github.com/me/hall/releases/download/v1.0.0/a.zip', gitee), 'https://gitee.com/me-cn/hall/releases/download/v1.0.0/a.zip')
+  assert.equal(giteeUrl('https://raw.githubusercontent.com/me/hall/main/registry/index.json', gitee), 'https://gitee.com/me-cn/hall/raw/main/registry/index.json')
+  assert.equal(giteeUrl('https://github.com/other/repo/releases/download/v1/a.zip', gitee), null)
+  assert.equal(giteeUrl('http://127.0.0.1:1/me/hall/releases/download/v1/a.zip', gitee), null)
+
+  const url = 'https://raw.githubusercontent.com/me/hall/main/registry/index.json'
+  const seen = []
+  const fakeFetch = responses => async target => {
+    seen.push(target)
+    const body = responses[target.startsWith('https://gitee.com/') ? 'gitee' : target.startsWith('https://ghfast.top/') ? 'mirror' : 'github']
+    if (body instanceof Error) throw body
+    return new Response(body.data, { status: body.status ?? 200, headers: body.headers })
+  }
+  const options = { mirror: 'https://ghfast.top/', gitee, parse: JSON.parse }
+  assert.deepEqual(await fetchText(url, { ...options, fetchImpl: fakeFetch({ gitee: { data: '{"from":"gitee"}' } }) }), { from: 'gitee' })
+  assert.deepEqual(seen, ['https://gitee.com/me-cn/hall/raw/main/registry/index.json'])
+
+  seen.length = 0
+  const result = await fetchText(url, { ...options, fetchImpl: fakeFetch({ gitee: { data: '<html>登录</html>' }, github: new Error('timeout'), mirror: { data: '{"from":"mirror"}' } }) })
+  assert.deepEqual(result, { from: 'mirror' })
+  assert.equal(seen.length, 3)
+
+  seen.length = 0
+  const zipUrl = 'https://github.com/me/hall/releases/download/v1.0.0/a.zip'
+  const data = Buffer.from('0123456789')
+  const range = await fetchRange(zipUrl, 2, 4, { gitee, fetchImpl: fakeFetch({ gitee: { data }, github: { data: data.subarray(2, 5), status: 206, headers: { 'content-range': 'bytes 2-4/10' } } }) })
+  assert.equal(range.toString(), '234')
+  assert.deepEqual(seen, [zipUrl])
+
+  const dir = tempDir(t, 'gitee-')
+  seen.length = 0
+  const sha256 = createHash('sha256').update(data).digest('hex')
+  await downloadVerified(zipUrl, path.join(dir, 'a.zip'), { sha256, size: data.length, gitee, fetchImpl: fakeFetch({ gitee: { data: 'not found', status: 404 }, github: { data } }) })
+  assert.equal(fs.readFileSync(path.join(dir, 'a.zip')).toString(), '0123456789')
+  assert.deepEqual(seen, ['https://gitee.com/me-cn/hall/releases/download/v1.0.0/a.zip', zipUrl])
 })
 
 test('版本指针：健康标记、清理旧版本与合并卡图资源包', t => {

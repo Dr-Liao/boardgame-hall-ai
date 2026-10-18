@@ -1,0 +1,26 @@
+# main 分支的游戏目录 registry/index.json 变化时同步到 Gitee，大厅优先从 Gitee 读取。
+# 需要仓库变量 GITEE_REPO 与 Secret GITEE_TOKEN；未设置 GITEE_REPO 时跳过。
+name: Sync registry to Gitee
+
+on:
+  push:
+    branches: [main]
+    paths: ['registry/index.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    if: ${{ vars.GITEE_REPO != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sync registry/index.json
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: node tools/release/gitee.mjs file registry/index.json --repo="${{ vars.GITEE_REPO }}" --path=registry/index.json --branch=main

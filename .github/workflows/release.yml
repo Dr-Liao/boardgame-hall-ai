@@ -2,6 +2,7 @@
 # 诡镇奇谈等游戏各自发布，玩家从大厅的游戏商店安装，所以这里不签出游戏子模块。
 # 需要的仓库 Secret：
 #   BOARDGAME_UPDATE_PRIVATE_KEY  更新签名私钥（tools/release/keygen.mjs 生成）
+# 可选的 Gitee 同步（见 docs/updates.md）：仓库变量 GITEE_REPO（如 owner/boardgame-hall-ai）+ Secret GITEE_TOKEN
 name: Release
 
 on:
@@ -74,3 +75,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/release/* --title "桌游大厅 $GITHUB_REF_NAME" --notes-file dist/notes.txt
+      - name: Mirror release to Gitee
+        if: ${{ vars.GITEE_REPO != '' }}
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: node tools/release/gitee.mjs release dist/release --repo="${{ vars.GITEE_REPO }}" --tag="$GITHUB_REF_NAME" --title="桌游大厅 $GITHUB_REF_NAME" --notes-file=dist/notes.txt
