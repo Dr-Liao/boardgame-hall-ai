@@ -2,7 +2,7 @@
 # 诡镇奇谈等游戏各自发布，玩家从大厅的游戏商店安装，所以这里不签出游戏子模块。
 # 需要的仓库 Secret：
 #   BOARDGAME_UPDATE_PRIVATE_KEY  更新签名私钥（tools/release/keygen.mjs 生成）
-# 可选的 Gitee 同步（见 docs/updates.md）：仓库变量 GITEE_REPO（如 owner/boardgame-hall-ai）+ Secret GITEE_TOKEN
+# 可选的 Cloudflare R2 同步（见 docs/updates.md）：仓库变量 R2_BUCKET、R2_ACCOUNT_ID + Secret R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY
 name: Release
 
 on:
@@ -74,15 +74,18 @@ jobs:
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        # 重跑时 Release 已存在：改用已发布的附件，保证 Gitee 与 GitHub 上的文件一致。
+        # 重跑时 Release 已存在：改用已发布的附件，保证 R2 与 GitHub 上的文件一致。
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             rm -rf dist/release && gh release download "$GITHUB_REF_NAME" -D dist/release
           else
             gh release create "$GITHUB_REF_NAME" dist/release/* --title "桌游大厅 $GITHUB_REF_NAME" --notes-file dist/notes.txt
           fi
-      - name: Mirror release to Gitee
-        if: ${{ vars.GITEE_REPO != '' }}
+      - name: Mirror release to R2
+        if: ${{ vars.R2_BUCKET != '' }}
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-        run: node tools/release/gitee.mjs release dist/release --repo="${{ vars.GITEE_REPO }}" --tag="$GITHUB_REF_NAME" --title="桌游大厅 $GITHUB_REF_NAME" --notes-file=dist/notes.txt
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: node tools/release/r2.mjs release dist/release --dir=hall --tag="$GITHUB_REF_NAME"

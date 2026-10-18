@@ -45,31 +45,43 @@ GitHub
 
    目录地址和大厅发布仓库都写在根 `package.json` 的 `boardgame` 字段中，打包时会一并写进发布包。已经分发出去的包会一直读这个地址，所以不要移动或重命名这个文件。
 
-5. **Gitee 镜像（可选，国内优先）**：大厅按 Gitee → GitHub → 用户填的加速镜像的顺序取文件，内容验签或校验不通过时换下一个来源，所以 Gitee 上缺文件或内容过期都不会出错。Gitee 附件不支持 Range，增量更新的分段下载直接走 GitHub，整包下载和清单仍优先 Gitee。
+5. **Cloudflare R2 镜像（可选，国内优先）**：大厅按 CDN → GitHub → 用户填的加速镜像的顺序取文件，内容验签或校验不通过时换下一个来源，所以 CDN 上缺文件或内容过期都不会出错。R2 支持 Range，增量更新的分段下载同样优先走 CDN。
 
-   1. 在 Gitee 新建两个**公开**仓库，例如 `<gitee用户名>/boardgame-hall-ai` 和 `<gitee用户名>/boardgame-arkhamhorror`。勾选“初始化仓库”，大厅仓库的默认分支设为 `main`（游戏目录按 GitHub 地址里的分支名读取）。不需要推送源码。
-   2. 在 Gitee「设置 → 私人令牌」生成一个带 `projects` 权限的令牌，在两个 GitHub 仓库里都配置：
+   两个仓库共用存储桶 `boardgame`，各占一个目录（大厅 `hall/`，诡镇 `arkhamhorror/`），目录下的路径与 GitHub 一一对应：
+
+   ```
+   hall/releases/download/<tag>/<文件>
+   hall/releases/latest/download/update-manifest.json
+   hall/raw/main/registry/index.json
+   arkhamhorror/releases/download/<tag>/<文件>
+   arkhamhorror/releases/latest/download/boardgame-mod.release.json
+   ```
+
+   1. 在 Cloudflare 控制台的 R2 存储桶「设置 → 自定义域」绑定一个托管在 Cloudflare 上的域名（当前为 `drliao1.com`）。不要用 `r2.dev` 公开地址，它有限速，只适合测试。
+   2. 在「R2 → 管理 API 令牌」创建一个对该存储桶有「对象读和写」权限的令牌，记下 Access Key ID、Secret Access Key 和账户 ID，在两个 GitHub 仓库里都配置：
 
       ```bash
-      gh secret set GITEE_TOKEN --repo Dr-Liao/boardgame-hall-ai
-      gh variable set GITEE_REPO --repo Dr-Liao/boardgame-hall-ai --body "<gitee用户名>/boardgame-hall-ai"
-      gh secret set GITEE_TOKEN --repo Dr-Liao/boardgame-arkhamhorror
-      gh variable set GITEE_REPO --repo Dr-Liao/boardgame-arkhamhorror --body "<gitee用户名>/boardgame-arkhamhorror"
+      for repo in Dr-Liao/boardgame-hall-ai Dr-Liao/boardgame-arkhamhorror; do
+        gh variable set R2_BUCKET --repo $repo --body "boardgame"
+        gh variable set R2_ACCOUNT_ID --repo $repo --body "<账户 ID>"
+        gh secret set R2_ACCESS_KEY_ID --repo $repo
+        gh secret set R2_SECRET_ACCESS_KEY --repo $repo
+      done
       ```
 
-      之后每次发版，workflow 会在 GitHub Release 之后用 `tools/release/gitee.mjs` 创建同名 Gitee Release 并上传附件（清单最后上传）。`registry/index.json` 推送到 `main` 时由 `sync-gitee.yml` 同步到 Gitee。超过 100 MB 的附件会跳过，玩家下载时自动回退到 GitHub。
-   3. 告诉大厅去哪个 Gitee 仓库找：根 `package.json` 的 `boardgame.gitee` 填大厅的 Gitee 仓库（同时用于读取游戏目录），`registry/index.json` 里每个游戏加 `gitee` 字段：
+      之后每次发版，workflow 会在 GitHub Release 之后用 `tools/release/r2.mjs` 把附件上传到 R2（清单最后上传，并另存一份到 `releases/latest/download/`）。`registry/index.json` 推送到 `main` 时由 `sync-r2.yml` 同步到 R2。带版本号的文件缓存一年，清单和游戏目录缓存 5 分钟。
+   3. 告诉大厅各仓库的 CDN 目录地址（以 `https://` 开头、以 `/` 结尾）：根 `package.json` 的 `boardgame.cdn` 用于大厅自身和游戏目录，`registry/index.json` 里每个游戏加 `cdn` 字段：
 
       ```json
-      "boardgame": { "repo": "Dr-Liao/boardgame-hall-ai", "gitee": "<gitee用户名>/boardgame-hall-ai", ... }
+      "boardgame": { "repo": "Dr-Liao/boardgame-hall-ai", "cdn": "https://dl.example.com/hall/", ... }
       ```
 
       ```json
-      { "id": "arkhamhorror", "repo": "Dr-Liao/boardgame-arkhamhorror", "gitee": "<gitee用户名>/boardgame-arkhamhorror", ... }
+      { "id": "arkhamhorror", "repo": "Dr-Liao/boardgame-arkhamhorror", "cdn": "https://dl.example.com/arkhamhorror/", ... }
       ```
 
-      `boardgame.gitee` 随大厅版本发布，已经分发的旧包不会读取它；游戏的 `gitee` 字段改目录即可生效。
-   4. 首次启用前，可以手动把现有的最新 Release 补到 Gitee：先 `gh release download <tag> --repo Dr-Liao/boardgame-hall-ai -D dist/gitee`，再 `GITEE_TOKEN=… node tools/release/gitee.mjs release dist/gitee --repo=<gitee用户名>/boardgame-hall-ai --tag=<tag>`。
+      `boardgame.cdn` 随大厅版本发布，已经分发的旧包不会读取它；游戏的 `cdn` 字段改目录即可生效。
+   4. 首次启用前，可以手动把现有的最新 Release 补到 R2：先 `gh release download <tag> --repo Dr-Liao/boardgame-arkhamhorror -D dist/r2`，再设置 `R2_*` 四个环境变量，运行 `node tools/release/r2.mjs release dist/r2 --dir=arkhamhorror --tag=<tag>`。大厅用 `--dir=hall`；游戏目录用 `node tools/release/r2.mjs file registry/index.json --dir=hall --path=registry/index.json`。`node tools/release/r2.mjs list --prefix=arkhamhorror/` 可以核对已上传的文件。
 
 ## 发布大厅
 
@@ -186,7 +198,7 @@ edition.json           仅纯大厅版有：列出内置的游戏
 
 ### 设置与环境变量
 
-- **GitHub 加速镜像**：在设置页填写一个以 `https://` 开头、以 `/` 结尾的前缀。Gitee 与 GitHub 直连都失败时，大厅会改用「前缀 + 原地址」重试。
+- **GitHub 加速镜像**：在设置页填写一个以 `https://` 开头、以 `/` 结尾的前缀。CDN 与 GitHub 直连都失败时，大厅会改用「前缀 + 原地址」重试。
 - **`BOARDGAME_UPDATE_CHECK=0`**：关闭自动检查。
 - **`BOARDGAME_GITHUB_BASE`**：替换 `https://github.com`，用于测试或使用自建的 Gitea 镜像。
 

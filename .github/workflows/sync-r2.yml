@@ -1,0 +1,29 @@
+# main 分支的游戏目录 registry/index.json 变化时同步到 Cloudflare R2，大厅优先从 CDN 读取。
+# 需要仓库变量 R2_BUCKET、R2_ACCOUNT_ID 与 Secret R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY；未设置 R2_BUCKET 时跳过。
+name: Sync registry to R2
+
+on:
+  push:
+    branches: [main]
+    paths: ['registry/index.json']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    if: ${{ vars.R2_BUCKET != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sync registry/index.json
+        env:
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: node tools/release/r2.mjs file registry/index.json --dir=hall --path=registry/index.json --branch=main

@@ -13,7 +13,7 @@ import { readPointer, writePointer, markHealthy, cleanupInstall, mergeLooseAppFo
 import { createUpdater, platformKey } from '../../lib/updater.js'
 import { buildIndex, indexFileName } from '../../lib/delta.js'
 import { createStore } from '../../lib/store.js'
-import { giteeUrl, fetchText, fetchRange, downloadVerified } from '../../lib/update-common.js'
+import { cdnUrl, fetchText, fetchRange, downloadVerified } from '../../lib/update-common.js'
 import { loadMods } from '../../lib/mods.js'
 import { createServer } from '../../lib/server.js'
 import gobang from '../../games/gobang/index.js'
@@ -124,44 +124,49 @@ test('签名清单：可信公钥通过，篡改、陌生公钥与未配置公�
   assert.throws(() => verifyEnvelope(text, []), /公钥/)
 })
 
-test('Gitee 镜像：地址换算，按 Gitee → GitHub → 加速镜像取文件，内容无效换来源，分段下载跳过 Gitee', async t => {
-  const gitee = { 'Me/Hall': 'me-cn/hall' }
-  assert.equal(giteeUrl('https://github.com/me/hall/releases/latest/download/update-manifest.json', gitee), 'https://gitee.com/me-cn/hall/releases/download/latest/update-manifest.json')
-  assert.equal(giteeUrl('https://github.com/me/hall/releases/download/v1.0.0/a.zip', gitee), 'https://gitee.com/me-cn/hall/releases/download/v1.0.0/a.zip')
-  assert.equal(giteeUrl('https://raw.githubusercontent.com/me/hall/main/registry/index.json', gitee), 'https://gitee.com/me-cn/hall/raw/main/registry/index.json')
-  assert.equal(giteeUrl('https://github.com/other/repo/releases/download/v1/a.zip', gitee), null)
-  assert.equal(giteeUrl('http://127.0.0.1:1/me/hall/releases/download/v1/a.zip', gitee), null)
+test('CDN 镜像：地址换算，按 CDN → GitHub → 加速镜像取文件，内容无效换来源，分段下载也先走 CDN', async t => {
+  const cdn = { 'Me/Hall': 'https://dl.example.com/hall/' }
+  assert.equal(cdnUrl('https://github.com/Me/Hall/releases/latest/download/update-manifest.json', cdn), 'https://dl.example.com/hall/releases/latest/download/update-manifest.json')
+  assert.equal(cdnUrl('https://github.com/me/hall/releases/download/v1.0.0/a.zip', cdn), 'https://dl.example.com/hall/releases/download/v1.0.0/a.zip')
+  assert.equal(cdnUrl('https://raw.githubusercontent.com/me/hall/main/registry/index.json', cdn), 'https://dl.example.com/hall/raw/main/registry/index.json')
+  assert.equal(cdnUrl('https://github.com/other/repo/releases/download/v1/a.zip', cdn), null)
+  assert.equal(cdnUrl('http://127.0.0.1:1/me/hall/releases/download/v1/a.zip', cdn), null)
+  assert.equal(cdnUrl('https://github.com/me/hall/releases/download/v1/a.zip', { 'me/hall': 'http://insecure/' }), null)
 
   const url = 'https://raw.githubusercontent.com/me/hall/main/registry/index.json'
   const seen = []
   const fakeFetch = responses => async target => {
     seen.push(target)
-    const body = responses[target.startsWith('https://gitee.com/') ? 'gitee' : target.startsWith('https://ghfast.top/') ? 'mirror' : 'github']
+    const body = responses[target.startsWith('https://dl.example.com/') ? 'cdn' : target.startsWith('https://ghfast.top/') ? 'mirror' : 'github']
     if (body instanceof Error) throw body
     return new Response(body.data, { status: body.status ?? 200, headers: body.headers })
   }
-  const options = { mirror: 'https://ghfast.top/', gitee, parse: JSON.parse }
-  assert.deepEqual(await fetchText(url, { ...options, fetchImpl: fakeFetch({ gitee: { data: '{"from":"gitee"}' } }) }), { from: 'gitee' })
-  assert.deepEqual(seen, ['https://gitee.com/me-cn/hall/raw/main/registry/index.json'])
+  const options = { mirror: 'https://ghfast.top/', cdn, parse: JSON.parse }
+  assert.deepEqual(await fetchText(url, { ...options, fetchImpl: fakeFetch({ cdn: { data: '{"from":"cdn"}' } }) }), { from: 'cdn' })
+  assert.deepEqual(seen, ['https://dl.example.com/hall/raw/main/registry/index.json'])
 
   seen.length = 0
-  const result = await fetchText(url, { ...options, fetchImpl: fakeFetch({ gitee: { data: '<html>登录</html>' }, github: new Error('timeout'), mirror: { data: '{"from":"mirror"}' } }) })
+  const result = await fetchText(url, { ...options, fetchImpl: fakeFetch({ cdn: { data: '<html>error</html>' }, github: new Error('timeout'), mirror: { data: '{"from":"mirror"}' } }) })
   assert.deepEqual(result, { from: 'mirror' })
   assert.equal(seen.length, 3)
 
   seen.length = 0
   const zipUrl = 'https://github.com/me/hall/releases/download/v1.0.0/a.zip'
+  const cdnZip = 'https://dl.example.com/hall/releases/download/v1.0.0/a.zip'
   const data = Buffer.from('0123456789')
-  const range = await fetchRange(zipUrl, 2, 4, { gitee, fetchImpl: fakeFetch({ gitee: { data }, github: { data: data.subarray(2, 5), status: 206, headers: { 'content-range': 'bytes 2-4/10' } } }) })
-  assert.equal(range.toString(), '234')
-  assert.deepEqual(seen, [zipUrl])
+  const partial = { data: data.subarray(2, 5), status: 206, headers: { 'content-range': 'bytes 2-4/10' } }
+  assert.equal((await fetchRange(zipUrl, 2, 4, { cdn, fetchImpl: fakeFetch({ cdn: partial }) })).toString(), '234')
+  assert.deepEqual(seen, [cdnZip])
+  seen.length = 0
+  assert.equal((await fetchRange(zipUrl, 2, 4, { cdn, fetchImpl: fakeFetch({ cdn: { data }, github: partial }) })).toString(), '234')
+  assert.deepEqual(seen, [cdnZip, zipUrl])
 
-  const dir = tempDir(t, 'gitee-')
+  const dir = tempDir(t, 'cdn-')
   seen.length = 0
   const sha256 = createHash('sha256').update(data).digest('hex')
-  await downloadVerified(zipUrl, path.join(dir, 'a.zip'), { sha256, size: data.length, gitee, fetchImpl: fakeFetch({ gitee: { data: 'not found', status: 404 }, github: { data } }) })
+  await downloadVerified(zipUrl, path.join(dir, 'a.zip'), { sha256, size: data.length, cdn, fetchImpl: fakeFetch({ cdn: { data: 'not found', status: 404 }, github: { data } }) })
   assert.equal(fs.readFileSync(path.join(dir, 'a.zip')).toString(), '0123456789')
-  assert.deepEqual(seen, ['https://gitee.com/me-cn/hall/releases/download/v1.0.0/a.zip', zipUrl])
+  assert.deepEqual(seen, [cdnZip, zipUrl])
 })
 
 test('版本指针：健康标记、清理旧版本与合并卡图资源包', t => {
@@ -462,12 +467,15 @@ test('更新接口：只接受本机 JSON 请求，非免安装环境拒绝重�
   assert.equal(view.hall.mode, 'dev')
   assert.equal(view.restartable, false)
   assert.deepEqual(view.settings, { autoCheck: true, mirror: '' })
+  assert.equal(view.checkPending, process.env.BOARDGAME_UPDATE_CHECK !== '0')
   assert.equal((await fetch(base + '/updates/check', { method: 'POST', body: '{}' })).status, 415)
   assert.equal((await fetch(base + '/updates', { headers: { origin: 'https://evil.example' } })).status, 403)
 
   const post = (route, body) => fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json())
   assert.match((await post('/updates/restart', {})).error, /手动/)
-  assert.equal((await post('/updates/settings', { autoCheck: false, mirror: 'https://ghfast.top/' })).settings.mirror, 'https://ghfast.top/')
+  const saved = await post('/updates/settings', { autoCheck: false, mirror: 'https://ghfast.top/' })
+  assert.equal(saved.settings.mirror, 'https://ghfast.top/')
+  assert.equal(saved.checkPending, false)
   assert.match((await post('/updates/settings', { mirror: 'ftp://bad' })).error, /镜像/)
   assert.match((await post('/store/uninstall', { id: 'gobang' })).error, /没有可卸载/)
 })
