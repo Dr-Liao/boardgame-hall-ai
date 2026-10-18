@@ -18,6 +18,7 @@ import { statsSnapshot, resetStats } from '../../lib/agent/log.js'
 import {
   visibleChat, chatLogFor, canWriteMemory, mergeNotes, compactDeterministic,
   pickNotesForSeat, groupNotes, normalizeNoteText, noteDuplicate, clampNoteText, clampChatText,
+  parseChatCommand, resolveChatTargets,
 } from '../../lib/chat.js'
 
 // ---------------------------------------------------------------------------
@@ -189,6 +190,41 @@ test('战术交流与备忘', { timeout: 90000 }, async (t) => {
     assert.deepEqual(groupNotes(result.notes).map((group) => group.key), ['team', 'seat:2'])
   })
 
+  await t.test('定向发言：@ 指定座位、@全体 与未知 @', () => {
+    const players = [
+      { seat: 0, role: 'human', name: 'player' },
+      { seat: 1, role: 'ai', name: '花冈柚子' },
+      { seat: 2, role: 'ai', name: '才羽桃' },
+      { seat: 3, role: 'ai', name: '才羽绿' },
+    ]
+    assert.deepEqual(resolveChatTargets('大家一起上', players), { mode: 'default', seats: [], unknown: [] })
+    assert.deepEqual(resolveChatTargets('@花冈柚子 你先查线索', players), { mode: 'some', seats: [1], unknown: [] })
+    assert.deepEqual(resolveChatTargets('@才羽绿 @花冈柚子 分头走', players), { mode: 'some', seats: [1, 3], unknown: [] })
+    const all = resolveChatTargets('@全体 报一下状态', players)
+    assert.equal(all.mode, 'all')
+    assert.deepEqual(all.seats, [1, 2, 3])
+    assert.equal(resolveChatTargets('@所有人 集合', players).mode, 'all')
+    assert.equal(resolveChatTargets('@全员 集合', players).mode, 'all')
+    assert.deepEqual(resolveChatTargets('@不存在 在吗', players), { mode: 'unknown', seats: [], unknown: ['不存在'] })
+    assert.equal(resolveChatTargets('邮箱是 a@b.com', players).mode, 'default', '@ 必须出现在词首才算定向')
+    assert.deepEqual(resolveChatTargets('@花冈柚子你好', players).seats, [1], '名字后直接跟标点/正文也能匹配')
+    assert.deepEqual(resolveChatTargets('@花冈柚子 @才羽桃 一起上', players).unknown, [])
+  })
+
+  await t.test('聊天指令：/备忘 与 /清除备忘 的解析', () => {
+    assert.equal(parseChatCommand('普通发言'), null)
+    assert.equal(parseChatCommand('备忘 不是指令'), null)
+    assert.equal(parseChatCommand('/备忘 先查线索').name, 'note')
+    assert.equal(parseChatCommand('/备忘 先查线索').args, '先查线索')
+    assert.equal(parseChatCommand('/note 先查线索').name, 'note')
+    assert.equal(parseChatCommand('/备忘').args, '')
+    assert.equal(parseChatCommand('/清除备忘').name, 'clear')
+    assert.equal(parseChatCommand('/clear').name, 'clear')
+    assert.equal(parseChatCommand('/help').name, 'help')
+    assert.equal(parseChatCommand('/不存在').unknown, true)
+    assert.equal(parseChatCommand('／备忘 全角斜杠').name, 'note', '全角斜杠也要识别')
+  })
+
   await t.test('压缩：确定性裁剪可复现，且按作用域分组', () => {
     const many = Array.from({ length: 20 }, (_, i) => ({ id: 'n' + (i + 1), text: '策略' + i, scope: 'team', createdAt: i, updatedAt: i }))
     const first = compactDeterministic(many, 8)
@@ -321,6 +357,8 @@ test('战术交流与备忘', { timeout: 90000 }, async (t) => {
   // ---------------- HTTP 端到端 ----------------
   await t.test('HTTP：公开/私聊、记忆落盘、指标分桶、备忘管理、重启可恢复', async () => {
     resetStats()
+    // 这一段验证基础链路，关掉回复冷却，避免连续发言被阈值拦下。
+    process.env.AI_CHAT_REPLY_COOLDOWN_MS = '0'
     const startServer = async () => {
       const server = createServer({ mods: [gobang] })
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -435,5 +473,133 @@ test('战术交流与备忘', { timeout: 90000 }, async (t) => {
     }
 
     assert.equal(model.state.foreignAuth, undefined, '不得使用 stub 之外的凭据')
+    delete process.env.AI_CHAT_REPLY_COOLDOWN_MS
+  })
+
+  // ---------------- 定向发言 / 指令 / 回复阈值 ----------------
+  await t.test('HTTP：@定向与@全体、/指令、回复冷却阈值', async () => {
+    resetStats()
+    delete process.env.AI_CHAT_REPLY_COOLDOWN_MS
+    // 用配置文件的 0 冷却启动，先验证路由行为；之后再用 /api/config 打开冷却验证阈值。
+    const configFile = path.join(home, 'boardgame.config.json')
+    fs.writeFileSync(configFile, JSON.stringify({ chatReplyCooldownMs: 0 }), 'utf8')
+    const multi = fakeMod({
+      id: 'fake-multi', name: '多人聊天测试', description: '三个座位（1 人类 + 2 AI）',
+      players: [1, 3], seats: 3, cooperative: true,
+    })
+    const server = createServer({ mods: [multi] })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    await server.ready
+    const url = 'http://127.0.0.1:' + server.address().port
+    const chatCallCount = () => model.state.seen.filter((payload) => systemOf(payload).includes('【讨论规则】')).length
+    try {
+      model.state.seen.length = 0
+      model.state.behavior = (payload) => {
+        if (systemOf(payload).includes('记忆整理助手')) return { content: '{"notes":[]}' }
+        if (systemOf(payload).includes('【讨论规则】')) {
+          return { content: '{"reply":"收到，我这就去。","memory":{"add":[],"update":[],"remove":[]}}' }
+        }
+        return { content: '{"move":{"x":0},"speech":"ok"}' }
+      }
+
+      const started = await call(url, 'POST', '/api/start', {
+        modId: 'fake-multi', settings: { opponents: ['ai-mo', 'ai-ling'] },
+      })
+      assert.equal(started.data.ok, true, JSON.stringify(started.data))
+      const sessionId = started.data.session.sessionId
+      const aiSeats = started.data.session.players.filter((p) => p.role === 'ai').map((p) => p.seat)
+      const aiNames = Object.fromEntries(started.data.session.players.filter((p) => p.role === 'ai').map((p) => [p.seat, p.name]))
+      assert.deepEqual(aiSeats, [1, 2])
+      const mention = (seat) => '@' + aiNames[seat]
+      // 只看本轮新增的 AI 回复条数：会话事件是累积的。
+      const tailReplies = (data, count) => (data.session.events || [])
+        .filter((event) => event.type === 'chat' && event.seat !== 0).slice(-count)
+        .map((event) => event.seat)
+
+      // @单个队友：只有该座位回复
+      const single = await call(url, 'POST', '/api/chat', { sessionId, text: mention(1) + ' 你先查线索', to: null })
+      assert.equal(single.data.ok, true, JSON.stringify(single.data))
+      assert.deepEqual(single.data.chat.replies.map((item) => item.seat), [1])
+      assert.deepEqual(tailReplies(single.data, 1), [1])
+
+      // @两个队友：被点到的座位各回复一条
+      const some = await call(url, 'POST', '/api/chat', { sessionId, text: mention(1) + ' ' + mention(2) + ' 分头行动', to: null })
+      assert.deepEqual(some.data.chat.replies.map((item) => item.seat).sort(), [1, 2])
+      assert.deepEqual(tailReplies(some.data, 2).sort(), [1, 2])
+
+      // @全体：所有 AI 座位都回复
+      const all = await call(url, 'POST', '/api/chat', { sessionId, text: '@全体 报一下各自位置', to: null })
+      assert.deepEqual(all.data.chat.replies.map((item) => item.seat).sort(), [1, 2])
+      assert.deepEqual(tailReplies(all.data, 2).sort(), [1, 2])
+
+      // 未知 @：给出提示并回落到默认单个座位
+      const unknown = await call(url, 'POST', '/api/chat', { sessionId, text: '@路人甲 你在吗', to: null })
+      assert.equal(unknown.data.chat.replies.length, 1)
+      assert.match(String(unknown.data.chat.warning || ''), /路人甲/)
+
+      // /备忘：直接写入队伍备忘，不调用模型
+      const before = chatCallCount()
+      const note = await call(url, 'POST', '/api/chat', { sessionId, text: '/备忘 先查线索再决定移动', to: null })
+      assert.equal(note.data.chat.command.name, 'note')
+      assert.equal(note.data.chat.notesAdded, 1)
+      assert.equal(note.data.session.notes.length, 1)
+      assert.equal(note.data.session.notes[0].scope, 'team')
+      assert.equal(note.data.session.notes[0].origin, 'manual')
+      assert.equal(note.data.chat.replies.length, 0, '/指令不得触发 AI 回复')
+      assert.equal(chatCallCount(), before, '/指令不得调用模型')
+
+      // /清除备忘：清空并回报条数
+      const cleared = await call(url, 'POST', '/api/chat', { sessionId, text: '/清除备忘', to: null })
+      assert.equal(cleared.data.chat.command.name, 'clear')
+      assert.equal(cleared.data.chat.notesRemoved, 1)
+      assert.deepEqual(cleared.data.session.notes, [])
+      assert.match(String(cleared.data.chat.notice || ''), /清空/)
+
+      // /help 与未知指令
+      const help = await call(url, 'POST', '/api/chat', { sessionId, text: '/help', to: null })
+      assert.equal(help.data.chat.command.name, 'help')
+      assert.ok(help.data.chat.command.lines.length >= 3)
+      const bad = await call(url, 'POST', '/api/chat', { sessionId, text: '/不存在指令', to: null })
+      assert.match(String(bad.data.chat.error || ''), /未知指令/)
+      assert.equal(bad.data.chat.replies.length, 0)
+
+      // 阈值一：上一条还在生成时，新发言只落库、不排队回复
+      model.state.behavior = async (payload) => {
+        if (systemOf(payload).includes('【讨论规则】')) {
+          await new Promise((resolve) => setTimeout(resolve, 400))
+          return { content: '{"reply":"稍等，我在算伤害。","memory":{"add":[],"update":[],"remove":[]}}' }
+        }
+        return { content: '{"move":{"x":0},"speech":"ok"}' }
+      }
+      const inflightFirst = call(url, 'POST', '/api/chat', { sessionId, text: '第一条：这回合谁去查线索？', to: null })
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      const inflightSecond = await call(url, 'POST', '/api/chat', { sessionId, text: '第二条：那谁去打架？', to: null })
+      const inflightDone = await inflightFirst
+      assert.equal(inflightDone.data.chat.replies.length, 1, '第一条正常回复')
+      assert.equal(inflightSecond.data.chat.skipped, 'inflight')
+      assert.equal(inflightSecond.data.chat.replies.length, 0, '第二条不得排队回复')
+      assert.equal(inflightSecond.data.session.events.filter((event) => event.type === 'chat' && event.seat === 0).at(-1).text,
+        '第二条：那谁去打架？', '即使不回复，玩家发言也要落库')
+
+      // 阈值二：冷却内的连续发言只记录不回复（换一个没聊过的私聊频道验证）
+      model.state.behavior = (payload) => {
+        if (systemOf(payload).includes('【讨论规则】')) {
+          return { content: '{"reply":"明白，我记住了。","memory":{"add":[],"update":[],"remove":[]}}' }
+        }
+        return { content: '{"move":{"x":0},"speech":"ok"}' }
+      }
+      const patched = await call(url, 'POST', '/api/config', { chatReplyCooldownMs: 60000 })
+      assert.equal(patched.data.chatReplyCooldownMs, 60000)
+      const coolFirst = await call(url, 'POST', '/api/chat', { sessionId, text: '私聊第一条', to: 2 })
+      assert.equal(coolFirst.data.chat.replies.length, 1)
+      const coolSecond = await call(url, 'POST', '/api/chat', { sessionId, text: '私聊第二条', to: 2 })
+      assert.equal(coolSecond.data.chat.skipped, 'cooldown')
+      assert.ok(coolSecond.data.chat.retryAfterMs > 0)
+      assert.equal(coolSecond.data.chat.replies.length, 0)
+      assert.equal(chatCallCount() > 0, true)
+    } finally {
+      fs.rmSync(configFile, { force: true })
+      await new Promise((resolve) => { server.closeAllConnections(); server.close(resolve) })
+    }
   })
 })

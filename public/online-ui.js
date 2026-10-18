@@ -53,7 +53,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     if (!relayUrl && value.relayUrl) setAddress(value.relayUrl)
     if (value.room) {
       state.setup = null
-      if (value.session && !state.busy && !state.chat.sending) {
+      if (value.session && !state.busy && !(state.chat.pendings || []).length) {
         // Busy actions defer applying snapshots, not just rendering them.
         // Remember that deferred work even if its serial was already observed.
         changed ||= appliedSerial !== value.serial

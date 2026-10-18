@@ -131,12 +131,14 @@ test('战术讨论抽屉：自动续玩、公开/私聊、备忘写入与钉住'
   await expect(page.locator('.bg-chat-tab', { hasText: '公开桌聊' })).toBeVisible()
   await expect(page.locator('.bg-chat-tab', { hasText: '🔒' }).first()).toBeVisible()
 
-  // 3) 公开桌聊：发言 + AI 回复
+  // 3) 公开桌聊：发言 + AI 回复；发送后按钮立即恢复正常，不等模型
   await page.fill('.bg-chat-input', '记住，以后优先推主线')
   await page.click('.bg-chat-send')
   await expect(page.locator('.bg-chat-msg-me')).toHaveCount(1)
   await expect(page.locator('.bg-chat-msg-pending')).toContainText('记住，以后优先推主线')
-  await expect(page.locator('.bg-chat-pending-label')).toHaveText('发送中…')
+  await expect(page.locator('.bg-chat-send')).toHaveText('发送')
+  await expect(page.locator('.bg-chat-send')).toBeDisabled()
+  await expect(page.locator('.bg-chat-input')).toHaveValue('')
   await expect(page.locator('.bg-chat-msg-ai')).toHaveCount(0)
   await expect.poll(() => typeof slowChatRelease).toBe('function')
   slowChatRelease()
@@ -173,6 +175,52 @@ test('战术讨论抽屉：自动续玩、公开/私聊、备忘写入与钉住'
   // 9) 控制台必须零错误（顺带守住 favicon 404 这类回归）
   expect(errors, errors.join('\n')).toEqual([])
 })
+test('@ 定向发言与 / 指令补全', async ({ page }) => {
+  const errors = []
+  page.on('pageerror', (error) => errors.push(String(error)))
+  page.on('console', (message) => { if (message.type() === 'error') errors.push('console: ' + message.text()) })
+
+  await page.goto(origin + '/', { waitUntil: 'networkidle' })
+  await page.evaluate((id) => localStorage.setItem('boardgame-hall.sessionId', id), sessionId)
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.click('.bg-chat-fab')
+
+  // 1) 输入 @ 自动弹出回复对象：全体成员 + 每位 AI 队友
+  await page.fill('.bg-chat-input', '@')
+  await expect(page.locator('.bg-chat-suggest')).toBeVisible()
+  await expect(page.locator('.bg-chat-suggest-item', { hasText: '全体成员' })).toBeVisible()
+  await expect(page.locator('.bg-chat-suggest-item')).toHaveCount(2)
+
+  // 2) 键盘选择「全体成员」，补全后弹层收起
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.bg-chat-input')).toHaveValue('@全体 ')
+  await expect(page.locator('.bg-chat-suggest')).toBeHidden()
+
+  // 3) 发送 @全体：被点到的座位回复
+  await page.fill('.bg-chat-input', '@全体 报一下位置')
+  await page.click('.bg-chat-send')
+  await expect(page.locator('.bg-chat-msg-ai')).toHaveCount(1)
+
+  // 4) 输入 / 自动弹出指令
+  await page.fill('.bg-chat-input', '/')
+  await expect(page.locator('.bg-chat-suggest')).toBeVisible()
+  await expect(page.locator('.bg-chat-suggest-item', { hasText: '/备忘' })).toBeVisible()
+  await expect(page.locator('.bg-chat-suggest-item', { hasText: '/清除备忘' })).toBeVisible()
+
+  // 5) 选中 /清除备忘：不调用模型，直接清空备忘
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.bg-chat-input')).toHaveValue('/清除备忘')
+  const chatCalls = modelRequests.filter((payload) => String(payload?.messages?.[0]?.content || '').includes('【讨论规则】')).length
+  await page.click('.bg-chat-send')
+  await expect(page.locator('.bg-chat-notice')).toContainText('清空')
+  await expect(page.locator('.bg-chat-note')).toHaveCount(0)
+  const afterCalls = modelRequests.filter((payload) => String(payload?.messages?.[0]?.content || '').includes('【讨论规则】')).length
+  expect(afterCalls, '/指令不得调用模型').toBe(chatCalls)
+
+  expect(errors, errors.join('\n')).toEqual([])
+})
+
 test('模型设置：高级参数可见、可保存并生效', async ({ page }) => {
   await page.goto(origin + '/', { waitUntil: 'networkidle' })
   await page.click('.bg-settings-btn')

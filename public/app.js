@@ -2,6 +2,7 @@
 // 纯原生 ES Module：无构建、无外部依赖，与 host 通过 /api 通信。
 
 import { createChatNotifications, chatChannel } from './chat-notifications.js'
+import { chatCompletionContext, chatFilterOptions, chatMessageKey } from './chat-compose.js'
 import { createOnlineUI } from './online-ui.js'
 import { createUpdatesUI } from './updates-ui.js'
 
@@ -186,6 +187,18 @@ function fileToAvatar(file) {
   })
 }
 
+// 战术讨论抽屉的初始状态。开局/读档时也走这个工厂，避免重置时漏掉字段
+// （漏掉 pendings 会让渲染抛错、界面停在"创建中…"）。
+const emptyChatState = () => ({
+  open: false,
+  channel: 'table', // 'table' | 私聊座位号（字符串）
+  draft: '',
+  pendings: [],     // 已发出、等待服务端确认的玩家发言（显示在消息列表里）
+  error: null,
+  notice: null,
+  notesOpen: false,
+})
+
 const state = {
   catalog: [],
   ais: [],
@@ -209,16 +222,7 @@ const state = {
   statsData: null,   // /api/agent-stats 快照
   statsBusy: false,
   statsError: null,
-  chat: {            // 战术讨论抽屉（公开桌聊 / 私聊 + 本局备忘）
-    open: false,
-    channel: 'table', // 'table' | 私聊座位号（字符串）
-    draft: '',
-    sending: false,
-    pending: null,    // 等待服务端确认、但已在消息列表中显示的玩家发言
-    error: null,
-    notice: null,
-    notesOpen: false,
-  },
+  chat: emptyChatState(),
   session: null,
   busy: false,
   error: null,
@@ -286,7 +290,7 @@ function patchAppWhileChatting(nextConsole, active) {
 
   // Keep the focused compose subtree connected so an Arkham presentation
   // repaint cannot cancel an in-progress IME composition.
-  for (const selector of ['.bg-chat-head', '.bg-chat-notes', '.bg-chat-list']) {
+  for (const selector of ['.bg-chat-head', '.bg-chat-notes', '.bg-chat-list', '.bg-chat-status']) {
     const oldPart = oldDrawer.querySelector(selector)
     const nextPart = nextDrawer.querySelector(selector)
     if (!!oldPart !== !!nextPart) return false
@@ -299,7 +303,7 @@ function patchAppWhileChatting(nextConsole, active) {
   else if (nextToasts) oldSurface.insertBefore(nextToasts, oldDrawer)
 
   const send = oldDrawer.querySelector('.bg-chat-send')
-  if (send) send.disabled = state.chat.sending || state.busy || !active.value.trim()
+  if (send) send.disabled = state.busy || !active.value.trim()
 
   const nextChildren = [...nextConsole.childNodes]
   const surfaceIndex = nextChildren.indexOf(nextSurface)
@@ -362,7 +366,7 @@ function renderApp() {
       consoleEl.append(h('div', { className: 'bg-game-actions', role: 'status' },
         `AI 自动重试中（${retry.attempt}/${retry.maxAttempts}），正在从当前局面继续。`))
     }
-    if (!state.busy && !state.online?.busy && (!s.online || s.mySeat === 0) && !state.chat.sending && s.state.status === 'playing' && s.players[seat]?.role === 'ai') {
+    if (!state.busy && !state.online?.busy && (!s.online || s.mySeat === 0) && !state.chat.pendings.length && s.state.status === 'playing' && s.players[seat]?.role === 'ai') {
       consoleEl.append(h('div', { className: 'bg-game-actions', role: 'status' },
         h('span', null, 'AI 等待继续，已完成的行动会保留。'),
         h('button', { className: 'bg-btn secondary', onclick: retryAi }, '继续 AI 行动')))
@@ -532,7 +536,7 @@ async function loadSavedSession(id, mode = 'solo') {
   if (mode === 'online') return onlineUi.loadSave(id)
   const r = await api('POST', '/session/load', { sessionId: id })
   state.session = r.session
-  state.chat = { open: false, channel: 'table', draft: '', sending: false, pending: null, error: null, notice: null, notesOpen: false }
+  state.chat = emptyChatState()
   rememberSession(r.session.sessionId)
   state.setup = null
   state.view = 'game'
@@ -559,7 +563,7 @@ async function startGame() {
     }
     const r = await api('POST', '/start', { modId: g.id, settings })
     state.session = r.session
-    state.chat = { open: false, channel: 'table', draft: '', sending: false, pending: null, error: null, notice: null, notesOpen: false }
+    state.chat = emptyChatState()
     rememberSession(r.session.sessionId)
     state.setup = null
     state.view = 'game'
@@ -739,6 +743,7 @@ function initModelForm() {
       chatNotesMax: numberOr(c.chatNotesMax, 12),
       chatMaxChars: numberOr(c.chatMaxChars, 500),
       chatWindow: numberOr(c.chatWindow, 8),
+      chatReplyCooldownMs: numberOr(c.chatReplyCooldownMs, 4000),
     }
   }
   return state.modelForm
@@ -766,6 +771,7 @@ function modelPayload() {
     chatNotesMax: pickNumber('chatNotesMax', 12),
     chatMaxChars: pickNumber('chatMaxChars', 500),
     chatWindow: pickNumber('chatWindow', 8),
+    chatReplyCooldownMs: pickNumber('chatReplyCooldownMs', 4000),
   }
 }
 function renderModelTab() {
@@ -843,6 +849,7 @@ function renderModelTab() {
       advancedNumber('备忘软上限 chatNotesMax', 'chatNotesMax', { step: '1', min: '4', max: '100' }, '超过后触发记忆压缩'),
       advancedNumber('单条发言上限 chatMaxChars', 'chatMaxChars', { step: '50', min: '50', max: '5000' }, '玩家单条讨论的字数上限'),
       advancedNumber('讨论窗口 chatWindow', 'chatWindow', { step: '1', min: '2', max: '100' }, '注入讨论提示词的最近聊天条数'),
+      advancedNumber('回复冷却 chatReplyCooldownMs (ms)', 'chatReplyCooldownMs', { step: '500', min: '0', max: '60000' }, 'AI 每次回复后的冷却时间：冷却内的连续发言只记录，不逐条排队回复；0 表示关闭'),
     )
   )
 
@@ -1309,7 +1316,7 @@ async function move(x, y) {
 
 async function retryAi() {
   const session = state.session
-  if (!session || state.busy || state.chat.sending) return
+  if (!session || state.busy || state.chat.pendings.length) return
   state.busy = true
   state.error = null
   state.movePending = { sessionId: session.sessionId, action: 'aiRetry' }
@@ -1405,7 +1412,11 @@ function refreshChatSurface() {
     const drawer = old.querySelector('.bg-chat-drawer'), nextDrawer = next.querySelector('.bg-chat-drawer')
     const focused = document.activeElement
     if (drawer && nextDrawer) {
-      drawer.querySelector('.bg-chat-head').replaceWith(nextDrawer.querySelector('.bg-chat-head'))
+      for (const selector of ['.bg-chat-head', '.bg-chat-notes', '.bg-chat-list', '.bg-chat-status']) {
+        const oldPart = drawer.querySelector(selector)
+        const nextPart = nextDrawer.querySelector(selector)
+        if (oldPart && nextPart) oldPart.replaceWith(nextPart)
+      }
       nextDrawer.replaceWith(drawer)
     }
     old.replaceWith(next)
@@ -1447,6 +1458,7 @@ function renderTacticalChat(session) {
     renderChatHead(session, notifications.unread),
     renderChatNotes(session),
     renderChatList(session),
+    renderChatStatus(),
     renderChatCompose(session)
   ))
   return surface
@@ -1475,10 +1487,11 @@ function renderChatHead(session, unread = {}) {
 }
 
 function renderChatNotes(session) {
-  if (session.online) return null
   const notes = Array.isArray(session.notes) ? session.notes : []
   const max = (state.config && state.config.chatNotesMax) || 12
   const open = state.chat.notesOpen
+  // 联机房间的备忘由房主落盘：成员只能看，改动走 /备忘 与 /清除备忘 指令。
+  const readOnly = !!session.online
   const head = h('button', {
     className: 'bg-chat-notes-head',
     'aria-label': '展开或收起战术备忘',
@@ -1488,17 +1501,19 @@ function renderChatNotes(session) {
 
   const body = h('div', { className: 'bg-chat-notes-body' })
   if (!notes.length) {
-    body.append(h('div', { className: 'bg-chat-empty' }, '还没有战术备忘。试试说「记住，以后先推进主线」。'))
+    body.append(h('div', { className: 'bg-chat-empty' }, '还没有战术备忘。试试说「记住，以后先推进主线」，或输入 /备忘 <内容>。'))
   }
   for (const note of notes) {
     body.append(h('div', { className: 'bg-chat-note' },
       h('span', { className: 'bg-chat-note-scope' }, note.scope === 'seat' ? ('🔒 ' + chatSeatName(session, note.seat)) : '队伍'),
       h('span', { className: 'bg-chat-note-text' }, note.text),
-      h('button', { className: 'bg-chat-note-btn', title: '编辑', 'aria-label': '编辑备忘', onclick: () => editNote(note) }, '✏️'),
-      h('button', { className: 'bg-chat-note-btn', title: '删除', 'aria-label': '删除备忘', onclick: () => deleteNote(note.id) }, '🗑')
+      readOnly ? null : h('button', { className: 'bg-chat-note-btn', title: '编辑', 'aria-label': '编辑备忘', onclick: () => editNote(note) }, '✏️'),
+      readOnly ? null : h('button', { className: 'bg-chat-note-btn', title: '删除', 'aria-label': '删除备忘', onclick: () => deleteNote(note.id) }, '🗑')
     ))
   }
-  body.append(h('button', { className: 'bg-btn secondary bg-chat-note-clear', onclick: clearNotes }, '清空本局记忆'))
+  body.append(readOnly
+    ? h('div', { className: 'bg-chat-note-hint' }, '用 /清除备忘 清空你能看到的备忘')
+    : h('button', { className: 'bg-btn secondary bg-chat-note-clear', onclick: clearNotes }, '清空本局记忆'))
   return h('div', { className: 'bg-chat-notes' }, head, body)
 }
 
@@ -1510,13 +1525,19 @@ function renderChatList(session) {
     const eventTo = event.to == null ? null : Number(event.to)
     return event.participants ? to !== null && event.participants.includes(to) : eventTo === to
   })
-  const pending = state.chat.pending
-  const pendingTo = pending?.to == null ? null : Number(pending.to)
-  if (pending?.sessionId === session.sessionId && pendingTo === to) messages.push(pending)
+  // 本地占位：已发出但服务端还没回显的发言。服务端一旦记录同一条（且 seq 在发送之后），占位就撤掉。
+  for (const pending of state.chat.pendings) {
+    if (pending.sessionId !== session.sessionId) continue
+    if ((pending.to == null ? null : Number(pending.to)) !== to) continue
+    if (messages.some((event) => event.seat === pending.seat
+      && Number(event.seq) >= (pending.sinceSeq ?? 0)
+      && chatMessageKey(event) === chatMessageKey(pending))) continue
+    messages.push(pending)
+  }
   const list = h('div', { className: 'bg-chat-list', 'aria-label': '讨论记录' })
   if (!messages.length) {
     list.append(h('div', { className: 'bg-chat-empty' }, to === null
-      ? '还没有讨论。可以问战术，也可以说「记住，以后…」让它变成长期约定。'
+      ? '还没有讨论。输入 @ 指定回复的队友、@全体 让所有人回应，输入 / 查看指令。'
       : '还没有和这位队友私聊过。私聊内容其它 AI 看不到。'))
   }
   for (const event of messages) {
@@ -1528,7 +1549,6 @@ function renderChatList(session) {
         chatAvatar(session,event.seat),
         h('span', { className: 'bg-chat-msg-name', style: { color: (player && player.colorHex) || '#8ea2c8' } }, name),
         to === null ? null : h('span', { className: 'bg-chat-lock' }, '🔒'),
-        event.pending ? h('span', { className: 'bg-chat-pending-label', role: 'status' }, '发送中…') : null,
         mine && !event.pending ? h('button', {
           className: 'bg-chat-pin',
           title: '钉住为战术备忘',
@@ -1542,6 +1562,116 @@ function renderChatList(session) {
   return list
 }
 
+// —— 输入补全：@ 定向队友 / @全体，以及 / 指令 ——
+
+function chatAiSeats(session) {
+  return (session.players || []).filter((player) => player && player.role === 'ai')
+}
+
+function chatMentionOptions(session) {
+  return [
+    { value: '@全体 ', label: '全体成员', hint: '所有 AI 队友都会回复', icon: '📣' },
+    ...chatAiSeats(session).map((player) => ({
+      value: '@' + player.name + ' ',
+      label: player.name,
+      hint: '只有 ' + player.name + ' 会回复',
+      avatar: player.avatar,
+    })),
+  ]
+}
+
+function chatCommandOptions() {
+  const fallback = [
+    { usage: '/备忘 <内容>', summary: '把这句话记进本局战术备忘' },
+    { usage: '/清除备忘', summary: '清空本局全部战术备忘' },
+    { usage: '/help', summary: '查看可用聊天指令' },
+  ]
+  const commands = (state.config && Array.isArray(state.config.chatCommands) && state.config.chatCommands.length)
+    ? state.config.chatCommands : fallback
+  return commands.map((command) => {
+    const usage = String(command.usage || '')
+    const value = usage.includes('<') ? usage.split(/\s+</)[0].trim() + ' ' : usage
+    return { value, label: usage, hint: command.summary || '', icon: '⌨️' }
+  })
+}
+
+/**
+ * 把补全弹层挂到输入框上：打字时更新，方向键选择，Enter/Tab 采用。
+ * @/ 的上下文判定与候选过滤是纯函数（见 public/chat-compose.js），这里只负责交互与 DOM。
+ */
+function mountChatSuggest(session, textarea, container, send) {
+  let items = []
+  let active = 0
+
+  const hide = () => {
+    items = []
+    active = 0
+    container.hidden = true
+    container.replaceChildren()
+  }
+
+  const refresh = () => {
+    const context = chatCompletionContext(textarea.value, textarea.selectionStart)
+    if (!context) return hide()
+    // 私聊频道已经指定了对象，不再提供 @ 定向；指令两种频道都可用。
+    const candidates = context.kind === 'command'
+      ? chatCommandOptions()
+      : state.chat.channel === 'table' ? chatMentionOptions(session) : []
+    const options = chatFilterOptions(candidates, context.query)
+    if (!options.length) return hide()
+    items = options
+    active = Math.min(active, options.length - 1)
+    container.hidden = false
+    container.replaceChildren(
+      h('div', { className: 'bg-chat-suggest-title' }, context.kind === 'command' ? '指令' : '回复对象'),
+      ...options.map((option, index) => h('button', {
+        type: 'button',
+        className: 'bg-chat-suggest-item' + (index === active ? ' is-active' : ''),
+        'aria-selected': index === active ? 'true' : 'false',
+        onmousedown: (event) => { event.preventDefault(); accept(option) },
+      },
+        h('span', { className: 'bg-chat-suggest-icon' }, option.avatar ? avatarContent(option.avatar) : option.icon || '💬'),
+        h('span', { className: 'bg-chat-suggest-copy' },
+          h('span', { className: 'bg-chat-suggest-label' }, option.label),
+          option.hint ? h('span', { className: 'bg-chat-suggest-hint' }, option.hint) : null))),
+    )
+  }
+
+  const accept = (option) => {
+    const context = chatCompletionContext(textarea.value, textarea.selectionStart)
+    if (!context || !option) return
+    const next = textarea.value.slice(0, context.start) + option.value + textarea.value.slice(context.end)
+    textarea.value = next
+    const caret = context.start + option.value.length
+    if (textarea.setSelectionRange) textarea.setSelectionRange(caret, caret)
+    state.chat.draft = next
+    send.disabled = state.busy || !next.trim()
+    refresh()
+    textarea.focus({ preventScroll: true })
+  }
+
+  // 返回 true 表示这次按键已被补全弹层消费。
+  const handleKey = (event) => {
+    if (!items.length) return false
+    if (event.key === 'ArrowDown') { event.preventDefault(); active = (active + 1) % items.length; refresh(); return true }
+    if (event.key === 'ArrowUp') { event.preventDefault(); active = (active - 1 + items.length) % items.length; refresh(); return true }
+    if (event.key === 'Enter' || event.key === 'Tab') { event.preventDefault(); accept(items[active]); return true }
+    if (event.key === 'Escape') { event.preventDefault(); hide(); return true }
+    return false
+  }
+
+  return { refresh, handleKey, hide }
+}
+
+/** 抽屉里的临时状态（错误 / 提示 / 正在回应）。放在输入框外面，局部刷新时才能更新。 */
+function renderChatStatus() {
+  return h('div', { className: 'bg-chat-status' },
+    state.chat.error ? h('div', { className: 'bg-chat-error' }, '⚠️ ' + state.chat.error) : null,
+    state.chat.notice ? h('div', { className: 'bg-chat-notice' }, state.chat.notice) : null,
+    state.chat.pendings.length ? h('div', { className: 'bg-chat-pending-status', role: 'status' }, '队友正在回应…') : null
+  )
+}
+
 function renderChatCompose(session) {
   const maxChars = (state.config && state.config.chatMaxChars) || 500
   const textarea = h('textarea', {
@@ -1552,72 +1682,132 @@ function renderChatCompose(session) {
     placeholder: state.chat.channel === 'table' ? '和大家讨论战术…（Enter 发送，Shift+Enter 换行）' : '私聊这位队友…',
   })
   textarea.value = state.chat.draft || ''
+  const suggest = h('div', { className: 'bg-chat-suggest', role: 'listbox', 'aria-label': '聊天补全', hidden: true })
   const send = h('button', {
     className: 'bg-btn bg-chat-send',
-    disabled: state.chat.sending || state.busy,
+    disabled: state.busy,
     onclick: () => sendChat(),
-  }, state.chat.sending ? '思考中…' : '发送')
-  // 打字不触发全量重绘（否则光标会跳），只同步状态与发送按钮可用性
+  }, '发送')
+  const controller = mountChatSuggest(session, textarea, suggest, send)
+  // 打字不触发全量重绘（否则光标会跳），只同步状态、补全弹层与发送按钮可用性
   textarea.addEventListener('input', () => {
     state.chat.draft = textarea.value
-    send.disabled = state.chat.sending || state.busy || !textarea.value.trim()
+    send.disabled = state.busy || !textarea.value.trim()
+    controller.refresh()
   })
   textarea.addEventListener('keydown', (event) => {
+    if (controller.handleKey(event)) return
     if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendChat() }
     else if (event.key === 'Escape') { state.chat.open = false; render() }
   })
-  send.disabled = send.disabled || !String(state.chat.draft || '').trim()
+  textarea.addEventListener('blur', () => setTimeout(() => {
+    if (document.activeElement !== textarea) controller.hide()
+  }, 120))
+  send.disabled = state.busy || !String(state.chat.draft || '').trim()
 
   return h('div', { className: 'bg-chat-compose' },
-    state.chat.error ? h('div', { className: 'bg-chat-error' }, '⚠️ ' + state.chat.error) : null,
-    state.chat.notice ? h('div', { className: 'bg-chat-notice' }, state.chat.notice) : null,
-    h('div', { className: 'bg-chat-compose-row' }, textarea, send)
+    suggest,
+    h('div', { className: 'bg-chat-compose-row' }, textarea, send),
+    h('div', { className: 'bg-chat-hint' }, chatAiSeats(session).length
+      ? '输入 @ 指定队友、@全体 让所有人回应；输入 / 使用指令。'
+      : '输入 / 使用指令。')
   )
 }
 
+/** 用服务端返回的会话替换本地视图，并撤掉已经落库的本地占位发言。 */
+function applyChatSession(next) {
+  state.session = next
+  const mine = (next.events || []).filter((event) => event.type === 'chat' && event.seat === (next.mySeat ?? 0))
+  state.chat.pendings = state.chat.pendings.filter((pending) => !mine.some((event) =>
+    Number(event.seq) >= (pending.sinceSeq ?? 0) && chatMessageKey(event) === chatMessageKey(pending)))
+}
+
+let chatPollTimer = null
+
+function stopChatPoll() {
+  if (chatPollTimer) { clearTimeout(chatPollTimer); chatPollTimer = null }
+}
+
+/** 回复可能分多条到达（@全体），轮询会话让它们逐条出现，而不是等最后一个字回来。 */
+function startChatPoll(sessionId) {
+  if (chatPollTimer) return
+  const tick = async () => {
+    chatPollTimer = null
+    const session = state.session
+    if (!session || session.sessionId !== sessionId) return
+    if (!state.chat.pendings.length) return
+    if (session.online || state.busy) { chatPollTimer = setTimeout(tick, 1200); return }
+    try {
+      const result = await api('GET', '/session?sessionId=' + encodeURIComponent(sessionId))
+      if (state.session?.sessionId === sessionId && result.session) {
+        const current = state.session
+        const next = result.session
+        const grew = (next.events || []).length > (current.events || []).length
+        const newer = (next.state?.revision ?? 0) > (current.state?.revision ?? 0)
+        if (grew || newer) {
+          applyChatSession(next)
+          render()
+        }
+      }
+    } catch { /* 轮询失败不影响最终响应 */ }
+    if (state.chat.pendings.length) chatPollTimer = setTimeout(tick, 1200)
+  }
+  chatPollTimer = setTimeout(tick, 500)
+}
+
+let chatSendToken = 0
+
 async function sendChat() {
   const session = state.session
-  if (!session || state.chat.sending || state.busy) return
+  if (!session || state.busy) return
   const text = String(state.chat.draft || '').trim()
   if (!text) return
   const channel = state.chat.channel
   const to = channel === 'table' ? null : Number(channel)
+  const pending = {
+    type: 'chat', seat: session.mySeat ?? 0, to, text,
+    pending: true, sessionId: session.sessionId, token: ++chatSendToken,
+    sinceSeq: Array.isArray(session.events) ? session.events.length : 0,
+  }
 
-  state.chat.sending = true
+  // 立即清空输入、恢复发送按钮：不等模型，连续发言由服务端阈值决定是否逐条回复。
+  state.chat.pendings.push(pending)
+  state.chat.draft = ''
   state.chat.error = null
   state.chat.notice = null
-  state.chat.draft = ''
-  state.chat.pending = {
-    type: 'chat',
-    seat: session.mySeat ?? 0,
-    to,
-    text,
-    pending: true,
-    sessionId: session.sessionId,
-  }
   render()
+  startChatPoll(session.sessionId)
   try {
     const result = await api('POST', '/chat', { sessionId: session.sessionId, text, to })
-    state.session = result.session
-    state.chat.pending = null
+    if (state.session?.sessionId === session.sessionId && result.session) applyChatSession(result.session)
     const chat = result.chat || {}
     if (chat.error) state.chat.error = chat.error
+    if (chat.warning) state.chat.notice = chat.warning
+    if (chat.notice) state.chat.notice = chat.notice
+    if (chat.skipped === 'inflight') {
+      state.chat.notice = 'AI 还在回应上一条，这条只记入讨论，不再排队回复。'
+    } else if (chat.skipped === 'cooldown') {
+      state.chat.notice = '连续发言只记录不逐条回复（冷却 ' + Math.ceil((chat.retryAfterMs || 0) / 1000) + ' 秒）。'
+    }
     if (chat.compacted) state.chat.notice = '记忆已自动压缩，精简 ' + chat.compacted + ' 条。'
     else if (chat.notesAdded || chat.notesUpdated || chat.notesRemoved) {
-      const parts = []
-      if (chat.notesAdded) parts.push('记住 ' + chat.notesAdded + ' 条')
-      if (chat.notesUpdated) parts.push('更新 ' + chat.notesUpdated + ' 条')
-      if (chat.notesRemoved) parts.push('忘记 ' + chat.notesRemoved + ' 条')
-      state.chat.notice = '已' + parts.join('、') + '（可在上方备忘里修改或删除）'
+      if (!chat.notice) {
+        const parts = []
+        if (chat.notesAdded) parts.push('记住 ' + chat.notesAdded + ' 条')
+        if (chat.notesUpdated) parts.push('更新 ' + chat.notesUpdated + ' 条')
+        if (chat.notesRemoved) parts.push('忘记 ' + chat.notesRemoved + ' 条')
+        state.chat.notice = '已' + parts.join('、') + '（可在上方备忘里修改或删除）'
+      }
       state.chat.notesOpen = true
     }
   } catch (err) {
-    state.chat.pending = null
     state.chat.error = String(err.message)
-    state.chat.draft = text // 失败保留输入，方便重试
+    if (!state.chat.draft) state.chat.draft = text // 失败保留输入，方便重试
+  } finally {
+    state.chat.pendings = state.chat.pendings.filter((item) => item.token !== pending.token)
+    if (!state.chat.pendings.length) stopChatPoll()
+    render()
   }
-  state.chat.sending = false
-  render()
 }
 
 async function pinChat(event) {
@@ -1625,15 +1815,26 @@ async function pinChat(event) {
   if (!session) return
   resetChatState()
   try {
-    const result = await api('POST', '/notes/add', {
-      sessionId: session.sessionId,
-      text: event.text,
-      to: event.to == null ? null : Number(event.to),
-      evidence: Number.isInteger(event.seq) ? event.seq : null,
-    })
-    state.session = result.session
-    state.chat.notice = '已钉住这条发言为战术备忘。'
-    state.chat.notesOpen = true
+    if (session.online) {
+      // 联机房间的备忘由房主落盘：把这条发言当成一次 /备忘 指令发给房主。
+      const text = '/备忘 ' + String(event.text == null ? '' : event.text).replace(/\s+/g, ' ').trim()
+      const result = await api('POST', '/chat', {
+        sessionId: session.sessionId, text, to: event.to == null ? null : Number(event.to),
+      })
+      if (result.session) applyChatSession(result.session)
+      state.chat.notice = (result.chat && result.chat.notice) || '已钉住这条发言为战术备忘。'
+      state.chat.notesOpen = true
+    } else {
+      const result = await api('POST', '/notes/add', {
+        sessionId: session.sessionId,
+        text: event.text,
+        to: event.to == null ? null : Number(event.to),
+        evidence: Number.isInteger(event.seq) ? event.seq : null,
+      })
+      state.session = result.session
+      state.chat.notice = '已钉住这条发言为战术备忘。'
+      state.chat.notesOpen = true
+    }
   } catch (err) {
     state.chat.error = String(err.message)
   }

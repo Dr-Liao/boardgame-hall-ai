@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { createRelay } from '../../relay/server.js'
@@ -79,6 +80,12 @@ test('two halls: ready, authoritative seats, revisions, duplicate operations, ch
   await waitFor(async () => (await host.call('status')).session.state.revision === 2)
   const chat = await guest.command('chat', { text: '来自第二席位', to: 0 })
   assert.equal(chat.session.events.at(-1).seat, 1)
+  assert.equal(chat.chat.error, undefined, '私聊真人不应报错')
+  // 纯人类房间的公开聊天：只记录，不报「没有可对话的 AI 座位」
+  const publicChat = await guest.command('chat', { text: '房间里的公开聊天' })
+  assert.equal(publicChat.ok, true)
+  assert.equal(publicChat.chat.error, undefined)
+  assert.equal(publicChat.session.events.some(e => e.type === 'chat' && e.text === '房间里的公开聊天'), true)
   assert.equal((await guest.command('reset')).ok, false)
   const localBefore = (await guest.call('status')).memberId
   // Refreshing a browser does not recreate its local hall connection.
@@ -295,6 +302,99 @@ test('empty slots can be AI and host executes AI turns once', async t => {
   const result = await host.command('move', { revision: started.session.state.revision, move: { x: position % 3, y: Math.floor(position / 3) } })
   assert.equal(result.ok, true, result.error)
   assert.equal(result.session.state.moveCount, 3)
+})
+
+test('online chat: @定向、@全体、/备忘 与备忘可见性', async t => {
+  // 联机讨论需要模型；用一个本地 stub 代替真实后端。
+  const stub = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => { body += chunk })
+    req.on('end', () => {
+      let payload = null
+      try { payload = JSON.parse(body) } catch { /* 忽略 */ }
+      const system = payload && payload.messages && payload.messages[0] ? String(payload.messages[0].content) : ''
+      const content = system.includes('记忆整理助手') ? '{"notes":[]}'
+        : system.includes('【讨论规则】') ? '{"reply":"收到，我这就去。","memory":{"add":[],"update":[],"remove":[]}}'
+          : '{"action":"ready","speech":"ok"}'
+      res.setHeader('content-type', 'application/json')
+      res.end(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }, model: 'stub' }))
+    })
+  })
+  const stubUrl = await new Promise((resolve) => stub.listen(0, '127.0.0.1', () => resolve('http://127.0.0.1:' + stub.address().port)))
+  const savedEnv = Object.fromEntries(['AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL', 'AI_JSON_MODE', 'AI_CHAT_REPLY_COOLDOWN_MS']
+    .map((key) => [key, process.env[key]]))
+  process.env.AI_API_KEY = 'stub-key'
+  process.env.AI_BASE_URL = stubUrl
+  process.env.AI_MODEL = 'stub'
+  process.env.AI_JSON_MODE = 'off'
+  process.env.AI_CHAT_REPLY_COOLDOWN_MS = '0'
+  try {
+    const { halls: [host, guest], relayUrl } = await fixture(t, 2)
+    const created = await host.call('create', {
+      relayUrl, modId: CARDS, capacity: 4, fillAi: false,
+      aiSeats: [{ seat: 2, aiId: 'ai-hu' }, { seat: 3, aiId: 'ai-ling' }],
+      settings: { seed: 'online-chat' },
+    })
+    assert.equal(created.ok, true, created.error)
+    assert.equal((await guest.call('join', { relayUrl, code: created.room.code })).ok, true)
+    await guest.call('ready', { ready: true })
+    const start = await host.command('start')
+    assert.equal(start.ok, true, start.error)
+    await waitFor(async () => (await guest.call('status')).session)
+    const session = (await guest.call('status')).session
+    const ais = session.players.filter((p) => p.role === 'ai')
+    assert.deepEqual(ais.map((p) => p.seat), [2, 3])
+    const nameOf = (seat) => ais.find((p) => p.seat === seat).name
+    const lastReplies = (data, count) => (data.session.events || [])
+      .filter((event) => event.type === 'chat' && event.seat !== 0 && event.seat !== 1)
+      .slice(-count).map((event) => event.seat)
+
+    // @单个队友：只有该 AI 回复，且公开可见
+    const single = await guest.command('chat', { text: '@' + nameOf(2) + ' 你先看牌' })
+    assert.equal(single.ok, true, single.error)
+    assert.deepEqual(single.chat.replies.map((item) => item.seat), [2])
+    assert.deepEqual(lastReplies(single, 1), [2])
+
+    // @全体：所有 AI 座位都回复
+    const all = await guest.command('chat', { text: '@全体 报一下手牌数' })
+    assert.deepEqual(all.chat.replies.map((item) => item.seat).sort(), [2, 3])
+    assert.deepEqual(lastReplies(all, 2).sort(), [2, 3])
+
+    // 公开 /备忘：队伍备忘，房主也能看到
+    const note = await guest.command('chat', { text: '/备忘 先看队友手牌再决定' })
+    assert.equal(note.chat.command.name, 'note')
+    assert.equal(note.chat.replies.length, 0)
+    assert.equal(note.session.notes.length, 1)
+    assert.equal(note.session.notes[0].scope, 'team')
+    await waitFor(async () => (await host.call('status')).session.notes.length === 1)
+
+    // 私聊 /备忘：只给发起私聊的成员看
+    const priv = await guest.command('chat', { text: '/备忘 别把牌给第三席看', to: 2 })
+    assert.equal(priv.chat.command.scope, 'seat')
+    assert.equal(priv.session.notes.length, 2)
+    assert.equal(priv.session.notes.some((item) => item.scope === 'seat'), true)
+    await waitFor(async () => (await guest.call('status')).session.notes.length === 2)
+    // 房主依旧只看得到队伍备忘（等一个发布节拍再断言）
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    assert.equal((await host.call('status')).session.notes.length, 1, '私聊备忘不得泄漏给其他成员')
+
+    // 私聊真人不能写备忘
+    const toHuman = await guest.command('chat', { text: '/备忘 这句话应该被拒绝', to: 0 })
+    assert.equal(toHuman.ok, true)
+    assert.match(String(toHuman.chat.error || ''), /AI 队友/)
+
+    // /清除备忘 只清掉自己看得见的（这里两条都在 guest 视野内）
+    const cleared = await guest.command('chat', { text: '/清除备忘' })
+    assert.equal(cleared.chat.notesRemoved, 2)
+    assert.deepEqual(cleared.session.notes, [])
+    await waitFor(async () => (await host.call('status')).session.notes.length === 0)
+  } finally {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    await new Promise((resolve) => { stub.closeAllConnections(); stub.close(resolve) })
+  }
 })
 
 test('reserved AI seats survive relay restart, block joins, and preserve the chosen AI identities', async t => {
