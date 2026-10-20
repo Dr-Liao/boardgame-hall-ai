@@ -413,7 +413,7 @@ function renderLibrary() {
         h('div', { className: 'bg-sub' }, '选择一款桌游，与朋友联机或与 AI 对弈')
       ),
       h('div', { className: 'bg-model-pill' + (cfg.hasKey ? '' : ' bg-model-pill-off') },
-        '🧠 ' + (cfg.hasKey ? (cfg.model || '已配置') : '未配置模型') + (cfg.hasKey ? '' : '，AI 会随机行动')
+        '🧠 ' + (cfg.hasKey ? (cfg.model || '已配置') : '未配置模型') + (cfg.hasKey ? '' : '，AI 由本地引擎代替落子且不说话')
       )
     ),
     h('div', { className: 'bg-online-entry' }, onlineUi.joinButton(), updatesUi.gameCenterButton()),
@@ -736,6 +736,7 @@ function initModelForm() {
       maxTokens: numberOr(c.maxTokens, 10000),
       maxTurnCalls: numberOr(c.maxTurnCalls, 24),
       jsonMode: c.jsonMode || 'auto',
+      reasoningEffort: c.reasoningEffort || '',
       turnTimeoutMs: numberOr(c.turnTimeoutMs, 120000),
       maxPromptTokens: numberOr(c.maxPromptTokens, 131072),
       memorySteps: numberOr(c.memorySteps, 2),
@@ -764,6 +765,7 @@ function modelPayload() {
     maxTokens: pickNumber('maxTokens', 10000),
     maxTurnCalls: pickNumber('maxTurnCalls', 24),
     jsonMode: f.jsonMode || c.jsonMode || 'auto',
+    reasoningEffort: f.reasoningEffort == null ? (c.reasoningEffort || '') : String(f.reasoningEffort),
     turnTimeoutMs: pickNumber('turnTimeoutMs', 120000),
     maxPromptTokens: pickNumber('maxPromptTokens', 131072),
     memorySteps: pickNumber('memorySteps', 2),
@@ -832,6 +834,15 @@ function renderModelTab() {
       advancedNumber('单步重试 maxRetries', 'maxRetries', { step: '1', min: '1', max: '20' }, '单个决策步内允许的模型调用次数'),
       advancedNumber('单次超时 timeoutMs (ms)', 'timeoutMs', { step: '1000', min: '1000', max: '600000' }, '单次 /chat/completions 请求的超时时间'),
       advancedNumber('输出上限 maxTokens', 'maxTokens', { step: '100', min: '0', max: '100000' }, '<=0 表示不发送该参数，由后端决定'),
+      advancedSelect('推理强度 reasoningEffort', [
+        { value: '', label: '不指定（后端默认）' },
+        { value: 'minimal', label: 'minimal' },
+        { value: 'low', label: 'low' },
+        { value: 'medium', label: 'medium' },
+        { value: 'high', label: 'high' },
+        { value: 'max', label: 'max' },
+      ], f.reasoningEffort || '', (e) => { f.reasoningEffort = e.target.value },
+      '推理型模型（如 DeepSeek flash / pro）会先思考再回答：棋类建议 low，剧本推理可用 high；后端不支持该参数时会自动忽略'),
     ),
     h('div', { className: 'bg-sec' }, '回合与上下文预算'),
     h('div', { className: 'bg-grid-2' },
@@ -976,8 +987,8 @@ const OUTCOME_LABEL = {
   parseError: '⚠️ 解析失败',
   validateError: '🚫 非法行动',
   callError: '📡 调用失败',
-  fallback: '🛟 兜底',
-  noKeyFallback: '🛟 兜底（未配置模型）',
+  fallback: '🛟 兜底（本地引擎）',
+  noKeyFallback: '🛟 兜底（未配置模型·本地引擎）',
   stall: '⛔ 中止',
 }
 

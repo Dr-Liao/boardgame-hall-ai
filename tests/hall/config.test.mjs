@@ -114,6 +114,7 @@ test('模型配置高级参数：界面可读写并持久化', async (t) => {
     'temperature', 'timeoutMs', 'topP', 'maxRetries', 'maxTokens', 'maxTurnCalls',
     'jsonMode', 'turnTimeoutMs', 'maxPromptTokens', 'memorySteps', 'chatEnabled',
     'chatNotesMax', 'chatMaxChars', 'chatWindow',
+    'maxTokensCeiling', 'reasoningRetries', 'reasoningEffort',
   ]) {
     assert.equal(Object.hasOwn(initial.data, key), true, 'GET /api/config 必须下发 ' + key)
   }
@@ -133,6 +134,9 @@ test('模型配置高级参数：界面可读写并持久化', async (t) => {
     chatNotesMax: 20,
     chatMaxChars: 800,
     chatWindow: 10,
+    maxTokensCeiling: 32000,
+    reasoningRetries: 1,
+    reasoningEffort: 'low',
   })
   assert.equal(saved.status, 200, JSON.stringify(saved.data))
   assert.equal(saved.data.ok, true)
@@ -150,11 +154,15 @@ test('模型配置高级参数：界面可读写并持久化', async (t) => {
   assert.equal(saved.data.chatNotesMax, 20)
   assert.equal(saved.data.chatMaxChars, 800)
   assert.equal(saved.data.chatWindow, 10)
+  assert.equal(saved.data.maxTokensCeiling, 32000)
+  assert.equal(saved.data.reasoningRetries, 1)
+  assert.equal(saved.data.reasoningEffort, 'low')
 
   const file = JSON.parse(fs.readFileSync(path.join(home, 'boardgame.config.json'), 'utf8'))
   assert.equal(file.memorySteps, 3)
   assert.equal(file.chatWindow, 10)
   assert.equal(file.chatEnabled, false)
+  assert.equal(file.reasoningEffort, 'low')
 
   const invalid = await call(base, 'POST', '/api/config', { maxRetries: '不是数字' })
   assert.equal(invalid.status, 400)

@@ -2,6 +2,9 @@
 //
 // 第二个示例 Mod，用来证明「每个桌游都是一个独立插件」。
 // 规则与五子棋完全不同（3×3、三连即胜），但暴露给 AI/agent 的接口一致。
+// 棋力部分由 engine.js 的完美解提供（井字棋状态极少，可以直接算出最强手）。
+
+import { AGENT_HINT, bestMove, suggestions, mustPlays, rankMoves } from './engine.js'
 
 const N = 3
 const idx = (x, y) => y * N + x
@@ -74,6 +77,36 @@ export default {
     const out = []
     for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (!state.board[idx(x, y)]) out.push({ x, y })
     return out
+  },
+
+  // ---- 给 AI 的棋力支持（可选接口，见 lib/mods.js）----
+  agentHint: AGENT_HINT,
+
+  /** 提示词里的「引擎建议」候选点（按 minimax 分值排序）。 */
+  agentCandidates(state, seat, limit) {
+    return suggestions(state, seat, limit || 4)
+  },
+
+  /** 模型失败/未配置时的兜底落点：完美解，不再随机挑空点。 */
+  agentFallback(state, seat) {
+    return bestMove(state, seat)
+  },
+
+  /** 纠正模型「会输」的一手：必杀、必防，以及被对手双杀时的不输下法。 */
+  refineMove(state, seat, move) {
+    if (!move || typeof move.x !== 'number' || typeof move.y !== 'number') return move
+    const { wins, blocks } = mustPlays(state, seat)
+    const isOne = (point) => point && point.x === move.x && point.y === move.y
+    if (wins.length) return wins.some(isOne) ? move : wins[0]
+    if (blocks.length) return blocks.some(isOne) ? move : blocks[0]
+    // 井字棋是已解游戏：模型这一手会输、而存在不输的下法时，换成不输的那一手。
+    // 这样 AI 不会因为「没想到双杀」而输给玩家，但同分的好手仍保留模型的自由。
+    const ranked = rankMoves(state, seat, 9)
+    const best = ranked[0]
+    if (!best || best.value < 0) return move
+    const chosen = ranked.find((entry) => entry.move.x === move.x && entry.move.y === move.y)
+    if (!chosen || chosen.value >= best.value) return move
+    return best.move
   },
 
   // ---- 规则 ----

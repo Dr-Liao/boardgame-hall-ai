@@ -63,6 +63,9 @@ AI 通过 **OpenAI 兼容的 `/chat/completions` 接口**调用模型，支持 O
 | `temperature` / `topP` | 0.7 / 不传 | 采样参数；`topP <= 0` 时不写入请求 |
 | `timeoutMs` | 60000 | 单次模型调用超时 |
 | `maxTokens` | 10000 | 单次调用的输出上限，`<= 0` 表示不传 |
+| `maxTokensCeiling` | 65536 | 推理把输出预算花光时（模型只思考没答话），自动翻倍重试的上限 |
+| `reasoningRetries` | 2 | 上述「思考吃满预算」的重试次数 |
+| `reasoningEffort` | 不传 | 推理强度 `minimal` / `low` / `medium` / `high` / `max`；留空由后端决定 |
 | `maxRetries` | 3 | 单个决策步内允许的模型调用次数（含解析失败、非法行动后的重试） |
 | `maxTurnCalls` | 24 | 单个 AI 回合内的模型调用总次数；一个回合可能有多步，超限会明确中止 |
 | `turnTimeoutMs` | 120000 | 单个 AI 回合的总时长预算，`<= 0` 关闭 |
@@ -168,7 +171,8 @@ lib/server.js 大厅：会话、路由、应用行动
 ```
 
 - **回合内记忆**：同一个 AI 在一个回合里的多步决策共享一段对话历史，超出 `memorySteps` 的旧步骤会被剪掉并注明「已省略」。
-- **确定性兜底**：重试用尽后，从 `mod.legalMoves()` 中按「对局种子 + 当前局面」选一个合法行动，同一局可复现。
+- **确定性兜底**：重试用尽后，优先用 `mod.agentFallback()` 给出的落点（棋类通常由本地引擎算出）；没有该接口时，从 `mod.legalMoves()` 中按「对局种子 + 当前局面」选一个合法行动，同一局可复现。
+- **引擎纠错**：`mod.refineMove()` 可以在模型给出「合法但会立刻输棋」的一手时改写落点（例如五子棋漏堵四连、井字棋漏挡三连），改写结果同样要过 `validateMove`。
 - **失败不静默**：没有可用的合法行动或超出回合预算时，返回明确的 `AGENT_STALLED` 错误，而不是让对局卡住。
 
 ### 决策日志与指标
@@ -225,6 +229,15 @@ export default {
 ```
 
 可选接口：`moveCost(state, seat, move)` 告诉兜底逻辑行动点成本（避免直接选「结束回合」）；`decisionSeed(session, seat, step)` 提供自定义兜底种子。
+
+棋类 Mod 还可以声明「本地棋力」，让 AI 在模型不给力时也不会乱下（五子棋、井字棋即按此实现，见 `games/gobang/engine.js`）：
+
+```js
+agentHint: '判断顺序：先看成五点，再看必须封堵的四连……',  // 追加进 system prompt
+agentCandidates(state, seat) { /* -> [{ move, note }]，提示词里的候选点 */ },
+agentFallback(state, seat) { /* -> 模型失败/未配置时的兜底落点 */ },
+refineMove(state, seat, move) { /* -> 必杀/必防时改写模型的落点 */ },
+```
 
 要通过游戏商店分发，在 Mod 根目录加一个 `boardgame-mod.json`（`id`、`version`、`hallApi` 等），格式与发布流程见 [自动更新与游戏商店](docs/updates.md#发布游戏)。
 

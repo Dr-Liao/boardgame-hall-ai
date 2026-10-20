@@ -3,8 +3,11 @@
 // 这是「每个桌游 = 一个独立插件」的参考实现。
 // 本文件只包含游戏规则 + 给 AI/agent 的接口，完全不感知 LLM：
 //   - 规则：createState / validateMove / applyMove；
-//   - AI 接口：moveFormat / describeState / legalMoves / moveToText。
-// 落子与台词由 lib/agent 里的模型产出，本 Mod 只负责校验与应用。
+//   - AI 接口：moveFormat / describeState / legalMoves / moveToText；
+//   - 棋力接口：agentHint / agentCandidates / agentFallback / refineMove（见 engine.js）。
+// 落子与台词由 lib/agent 里的模型产出，本 Mod 只负责校验、应用与战术兜底。
+
+import { AGENT_HINT, bestMove, rankMoves, mustPlays } from './engine.js'
 
 const N = 15
 const idx = (x, y) => y * N + x
@@ -95,6 +98,31 @@ export default {
     const out = []
     for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (!state.board[idx(x, y)]) out.push({ x, y })
     return out
+  },
+
+  // ---- 给 AI 的棋力支持（可选接口，见 lib/mods.js）----
+  // 五子棋的胜负只由棋型决定，模型很难稳定看出活三/冲四；
+  // 这里给出本地引擎的三件套：战术说明、候选点、必杀必防纠错与兜底。
+  agentHint: AGENT_HINT,
+
+  /** 提示词里的「引擎建议」候选点（按强弱排序）。 */
+  agentCandidates(state, seat, limit) {
+    return rankMoves(state, seat, limit || 4)
+  },
+
+  /** 模型失败/未配置时的兜底落点：走本地引擎，不再随机挑空点。 */
+  agentFallback(state, seat) {
+    return bestMove(state, seat)
+  },
+
+  /** 只在「必杀 / 必防」时纠正模型的一手；模型本身下对了就原样保留。 */
+  refineMove(state, seat, move) {
+    if (!move || typeof move.x !== 'number' || typeof move.y !== 'number') return move
+    const { wins, blocks } = mustPlays(state, seat)
+    const isOne = (point) => point && point.x === move.x && point.y === move.y
+    if (wins.length) return wins.some(isOne) ? move : wins[0]
+    if (blocks.length) return blocks.some(isOne) ? move : blocks[0]
+    return move
   },
 
   // ---- 规则 ----

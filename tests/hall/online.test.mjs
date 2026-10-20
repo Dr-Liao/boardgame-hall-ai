@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createRelay } from '../../relay/server.js'
 import { createServer } from '../../lib/server.js'
-import { relayAddress } from '../../lib/online.js'
+import { gameVersions, relayAddress } from '../../lib/online.js'
 import { snapshotPath } from '../../lib/sessions.js'
 import { loadTestMods } from './helpers/mods.mjs'
 
@@ -50,6 +50,18 @@ test('relay address accepts Render HTTPS and loopback development, rejects crede
   assert.equal(relayAddress('https://test.onrender.com'), 'wss://test.onrender.com/ws')
   assert.equal(relayAddress('http://127.0.0.1:1234'), 'ws://127.0.0.1:1234/ws')
   for (const url of ['http://example.com', 'wss://user:pass@example.com', 'file:///tmp/x', 'https://x.com?key=a']) assert.throws(() => relayAddress(url))
+})
+
+test('online compatibility uses manifest version numbers instead of file fingerprints', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-versions-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  fs.writeFileSync(path.join(dir, 'index.js'), '// 第一版\n')
+  const mods = [{ id: 'demo', package: { version: '1.2.3', dir } }]
+  assert.deepEqual(gameVersions(mods), { demo: '1.2.3' })
+  fs.writeFileSync(path.join(dir, 'index.js'), '// 只改注释，版本号不变\n')
+  fs.writeFileSync(path.join(dir, 'extra.json'), '{"changed":true}')
+  assert.deepEqual(gameVersions(mods), { demo: '1.2.3' }, '改游戏文件内容不应改变联机兼容性')
+  assert.deepEqual(gameVersions([{ id: 'builtin' }, { id: 'odd', package: { version: 'dev' } }]), { builtin: '0.0.0', odd: '0.0.0' })
 })
 
 test('two halls: ready, authoritative seats, revisions, duplicate operations, chat, reset, reconnect and close', async t => {
@@ -269,12 +281,19 @@ test('relay rejects incompatible games and guest control messages; snapshots sta
     const value = { socket, messages, send, rpc }; clients.push(value); return value
   }
   const host = await client(), guest = await client(), stranger = await client()
-  const created = await host.rpc({ type: 'create', name: '房主', capacity: 2, game: { id: 'ox', name: '井字棋', version: 'one' } })
+  const created = await host.rpc({ type: 'create', name: '房主', capacity: 2, hallVersion: '0.1.2', game: { id: 'ox', name: '井字棋', version: '1.0.0' } })
   const room = created.data.room
-  assert.equal((await guest.rpc({ type: 'join', code: room.code, versions: { ox: 'two' } })).ok, false)
-  const joined = await guest.rpc({ type: 'join', code: room.code, versions: { ox: 'one' } })
+  assert.equal(room.hallVersion, '0.1.2')
+  assert.equal((await guest.rpc({ type: 'join', code: room.code, hallVersion: '0.1.2', versions: { ox: '1.0.1' } })).ok, false, 'game version must match')
+  assert.equal((await guest.rpc({ type: 'join', code: room.code, hallVersion: '0.1.3', versions: { ox: '1.0.0' } })).ok, false, 'hall version must match')
+  const joined = await guest.rpc({ type: 'join', code: room.code, hallVersion: '0.1.2', versions: { ox: '1.0.0' } })
   assert.equal(joined.ok, true)
-  await stranger.rpc({ type: 'create', capacity: 2, game: { id: 'ox', name: '其他房间', version: 'one' } })
+  await stranger.rpc({ type: 'create', capacity: 2, hallVersion: '0.1.2', game: { id: 'ox', name: '其他房间', version: '1.0.0' } })
+  // 旧版大厅不上报大厅版本号：这类房间仍只比较游戏版本号，新版中转不会挡住旧客户端。
+  const legacyHost = await client(), legacyGuest = await client()
+  const legacyRoom = (await legacyHost.rpc({ type: 'create', capacity: 2, game: { id: 'ox', name: '旧版房间', version: '1.0.0' } })).data.room
+  assert.equal(legacyRoom.hallVersion, null)
+  assert.equal((await legacyGuest.rpc({ type: 'join', code: legacyRoom.code, versions: { ox: '1.0.0' } })).ok, true)
   for (const type of ['snapshot', 'reply', 'phase']) assert.equal((await guest.rpc({ type, phase: 'playing', target: joined.data.memberId, data: { session: { private: 'forged' } } })).ok, false)
   assert.equal((await guest.rpc({ type: 'request', action: 'config', body: { apiKey: 'fake' } })).ok, false)
   host.send({ type: 'snapshot', target: joined.data.memberId, data: { session: { private: 'only-room-one' } } })
