@@ -6,6 +6,8 @@ import { WebSocketServer, WebSocket } from 'ws'
 const id = () => randomBytes(18).toString('base64url')
 const fail = message => { throw new Error(message) }
 const name = value => String(value || '玩家').trim().slice(0, 32) || '玩家'
+// 大厅版本号：旧版大厅不发送，按“不校验”处理，以兼容已部署的旧客户端。
+const readHallVersion = value => (typeof value === 'string' && /^\d+\.\d+\.\d+$/.test(value) ? value : null)
 const MAX_BYTES = 8 * 1024 * 1024
 function reservedSeats(value, capacity) {
   if (value == null) return []
@@ -46,7 +48,7 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
     if (socket.bufferedAmount > MAX_BYTES * 2) { socket.close(1013, '连接过慢'); return }
     socket.send(JSON.stringify(value))
   }
-  const view = room => ({ code: room.code, game: room.game, capacity: room.capacity, aiSeats: room.aiSeats, phase: room.phase,
+  const view = room => ({ code: room.code, game: room.game, hallVersion: room.hallVersion, capacity: room.capacity, aiSeats: room.aiSeats, phase: room.phase,
     members: [...room.members.values()].map(({ socket, ...member }) => ({ ...member, online: socket?.readyState === WebSocket.OPEN })) })
   const announce = room => {
     room.touched = Date.now()
@@ -95,7 +97,7 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
           const aiSeats = reservedSeats(message.aiSeats, capacity)
           let code
           do { code = randomBytes(5).toString('hex').toUpperCase() } while (rooms.has(code))
-          const room = { code, nonce: id(), game: { id: message.game.id, name: name(message.game.name), version: message.game.version }, capacity, aiSeats, phase: 'waiting', members: new Map(), touched: Date.now() }
+          const room = { code, nonce: id(), game: { id: message.game.id, name: name(message.game.name), version: message.game.version }, hallVersion: readHallVersion(message.hallVersion), capacity, aiSeats, phase: 'waiting', members: new Map(), touched: Date.now() }
           const member = { id: id(), seat: 0, name: name(message.name), host: true, ready: true }
           room.members.set(member.id, member); rooms.set(code, room)
           data = attach(socket, room, member)
@@ -103,6 +105,8 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
           if (socket.room) fail('请先退出当前房间')
           const room = rooms.get(String(message.code).toUpperCase())
           if (!room) fail('房间不存在，请检查中转地址和房间码')
+          // 兼容性只看两个版本号：大厅版本号（未上报的旧大厅跳过）与游戏版本号。
+          if (room.hallVersion && readHallVersion(message.hallVersion) !== room.hallVersion) fail('大厅版本不一致，请双方更新到同一版本')
           if (message.versions?.[room.game.id] !== room.game.version) fail('游戏版本不一致，请双方更新到同一版本')
           if (room.phase !== 'waiting') fail('游戏已经开始，暂不接受新玩家')
           if (![...room.members.values()].find(member => member.host)?.socket) fail('房主已离线，请稍后重试')
@@ -123,7 +127,7 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
             if (!saved || !Number.isInteger(saved.capacity) || saved.capacity < 2 || saved.capacity > 8 || !Array.isArray(saved.members) || saved.members.length > saved.capacity) fail('房间恢复信息无效')
             const aiSeats = reservedSeats(saved.aiSeats, saved.capacity)
             if (saved.members.some(member => aiSeats.some(ai => ai.seat === member.seat))) fail('房间席位恢复信息冲突')
-            room = { code: ticket.code, nonce: ticket.nonce, game: saved.game, capacity: saved.capacity, aiSeats, phase: saved.phase, members: new Map(), touched: Date.now() }
+            room = { code: ticket.code, nonce: ticket.nonce, game: saved.game, hallVersion: readHallVersion(saved.hallVersion), capacity: saved.capacity, aiSeats, phase: saved.phase, members: new Map(), touched: Date.now() }
             for (const m of saved.members) room.members.set(m.id, { id: m.id, seat: m.seat, name: name(m.name), host: m.id === ticket.member.id, ready: !!m.ready, socket: null })
             rooms.set(room.code, room)
           }
