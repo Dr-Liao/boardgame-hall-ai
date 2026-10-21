@@ -85,8 +85,8 @@ GitHub
 
 ## 发布大厅
 
-1. 修改根 `package.json` 的 `version`（格式 `x.y.z`）并提交。
-2. 打 tag 并推送，tag 中的说明文字会作为更新说明显示在大厅里：
+1. 双击根目录的 `release.bat`（也可以 `release.bat 1.1.0 "更新说明"`）：它只处理大厅仓库，检查工作区干净且与 `origin/main` 同步，更新根 `package.json` 和 `package-lock.json` 的版本号，提交 `chore: release v1.1.0`、打 tag 并推送。诡镇奇谈的版本号不会被改动。
+2. 手动发版等价于修改根 `package.json` 的 `version`（格式 `x.y.z`）并提交，然后打 tag 并推送，tag 中的说明文字会作为更新说明显示在大厅里：
 
    ```bash
    git tag -a v1.1.0 -m "新增游戏商店；修复联机重连"
@@ -155,7 +155,7 @@ GitHub
 
 游戏包里不能有运行时 npm 依赖，因为玩家的机器上不会执行 `npm install`。
 
-发布方式与大厅相同：修改 `boardgame-mod.json` 的 `version`，然后打 tag 并推送。仓库里的 `.github/workflows/release.yml` 会签出大厅仓库，调用 `tools/release/pack-mod.mjs` 打包并签名，最后发布 Release。发布产物包括 `<id>-<版本>.zip`、增量更新用的 `<id>-<版本>.files.json` 和 `boardgame-mod.release.json`。玩家已有该游戏的旧版本（包括大厅内置的版本）时，只下载变化的文件。
+发布方式和大厅一样（打 tag 触发 CI），脚本在大厅仓库的 `games/arkhamhorror/release.bat`：它会检查工作区干净且与 `origin/main` 同步，只更新本仓库 `package.json` 和 `boardgame-mod.json` 的版本号，提交、打 tag 并推送到诡镇仓库，不改动大厅的版本。也可以手动修改 `boardgame-mod.json` 的 `version`，然后打 tag 并推送。发布后大厅仓库里的子模块指针会指向新提交，下次发布大厅前先运行 `push-all.bat` 把它提交掉。仓库里的 `.github/workflows/release.yml` 会签出大厅仓库，调用 `tools/release/pack-mod.mjs` 打包并签名，最后发布 Release。发布产物包括 `<id>-<版本>.zip`、增量更新用的 `<id>-<版本>.files.json` 和 `boardgame-mod.release.json`。玩家已有该游戏的旧版本（包括大厅内置的版本）时，只下载变化的文件。
 
 `hallApi` 高于玩家大厅支持版本的游戏不会被安装，界面会提示「需要先更新大厅」。修改 Mod 接口契约时，先发布支持新 `hallApi` 的大厅，再发布依赖它的游戏。
 
