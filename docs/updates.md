@@ -95,6 +95,7 @@ GitHub
 
 3. `.github/workflows/release.yml` 会自动完成以下步骤：
    - 在 Windows 和 macOS 上构建**纯大厅**免安装包，只内置五子棋和井字棋。诡镇等游戏不随大厅发布，玩家从游戏商店安装；
+   - 编译 Windows 启动器；配置了 `BOARDGAME_SIGN_THUMBPRINT` / `BOARDGAME_SIGN_PFX` / `BOARDGAME_SIGN_COMMAND` 时会给 `桌游大厅.exe` 做代码签名（见 [Windows 的「未知发布者」提示](windows-signing.md)）；
    - 用 `tools/release/pack-update.mjs` 拆出程序包和各平台运行时包。程序包也来自纯大厅版，只有几百 KB；
    - 用 `tools/release/make-manifest.mjs` 生成并签名 `update-manifest.json`；
    - 发布 GitHub Release。
@@ -110,6 +111,8 @@ GitHub
 | `update-manifest.json` | 签名清单 |
 
 注意：引入自动更新的第一个版本需要玩家手动下载完整包，因为旧启动器还不支持版本切换。此后的版本都可以自动更新。
+
+**「未知发布者」提示**：免安装包里的 `桌游大厅.exe` 由 `tools/build-windows.ps1` 用 .NET Framework 的 csc 编译，没有证书时是未签名程序。从网上下载的包首次运行会弹「打开文件 - 安全警告」并显示「未知发布者」。本机运行先解除文件锁定即可；对外发布建议给 EXE 签名，证书选择、构建参数和 CI 接法见 [Windows 的「未知发布者」提示](windows-signing.md)。
 
 ### 增量更新
 

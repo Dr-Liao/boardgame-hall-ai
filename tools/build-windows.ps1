@@ -1,4 +1,17 @@
-﻿param([switch]$SkipZip, [switch]$SkipAssets, [switch]$AssetsOnly, [switch]$HallOnly)
+﻿param(
+    [switch]$SkipZip,
+    [switch]$SkipAssets,
+    [switch]$AssetsOnly,
+    [switch]$HallOnly,
+    # 代码签名（可选，见 docs/windows-signing.md）：三种方式任选其一，也可用同名 BOARDGAME_SIGN_* 环境变量。
+    [string]$SignThumbprint = $env:BOARDGAME_SIGN_THUMBPRINT,
+    [string]$SignPfx = $env:BOARDGAME_SIGN_PFX,
+    [string]$SignPfxPassword = $env:BOARDGAME_SIGN_PFX_PASSWORD,
+    [string]$SignCommand = $env:BOARDGAME_SIGN_COMMAND,
+    [string]$TimestampUrl = $(if ($env:BOARDGAME_SIGN_TIMESTAMP_URL) { $env:BOARDGAME_SIGN_TIMESTAMP_URL } else { 'http://timestamp.digicert.com' }),
+    # 发布流水线用：要求必须签名，没配置证书或签名失败时直接让构建失败。
+    [switch]$RequireSignature
+)
 $ErrorActionPreference = 'Stop'
 if ($SkipAssets -and $AssetsOnly) { throw 'SkipAssets 与 AssetsOnly 不能同时使用。' }
 if ($HallOnly -and $AssetsOnly) { throw 'HallOnly 与 AssetsOnly 不能同时使用。' }
@@ -83,6 +96,24 @@ if ($buildLogic) {
     $executable = Join-Path $releaseRoot '桌游大厅.exe'
     & $compiler /nologo /codepage:65001 /target:exe /platform:x64 /optimize+ "/out:$executable" (Join-Path $PSScriptRoot 'windows\Launcher.cs')
     if ($LASTEXITCODE -ne 0) { throw 'EXE 编译失败。' }
+    # 签名必须是最后一步：签名后任何改动（替换资源、改配置、重新打包）都会让签名失效。
+    # 没配证书时照常产出未签名包，Windows 会提示「未知发布者」，处理办法见 docs/windows-signing.md。
+    $signMethod = if ($SignThumbprint) { '证书存储' } elseif ($SignPfx) { 'PFX 文件' } elseif ($SignCommand) { '外部命令' } else { $null }
+    $signature = $null
+    if ($signMethod) {
+        $signArguments = @{ Path = $executable; TimestampUrl = $TimestampUrl }
+        if ($SignThumbprint) { $signArguments.Thumbprint = $SignThumbprint }
+        if ($SignPfx) { $signArguments.PfxPath = $SignPfx; if ($SignPfxPassword) { $signArguments.PfxPassword = $SignPfxPassword } }
+        if ($SignCommand) { $signArguments.SignCommand = $SignCommand }
+        Write-Output "SIGNING=$signMethod"
+        & (Join-Path $PSScriptRoot 'windows\sign-release.ps1') @signArguments
+        $signature = Get-AuthenticodeSignature -LiteralPath $executable
+        if (!$signature -or $signature.Status -ne 'Valid') { throw 'EXE 签名校验失败。' }
+    } elseif ($RequireSignature) {
+        throw '已要求签名（-RequireSignature），但没有配置证书：请设置 BOARDGAME_SIGN_THUMBPRINT / BOARDGAME_SIGN_PFX / BOARDGAME_SIGN_COMMAND 环境变量，或传 -SignThumbprint / -SignPfx / -SignCommand。'
+    } else {
+        Write-Warning '未配置代码签名证书：发布包会显示「未知发布者」。配置方法见 docs/windows-signing.md。'
+    }
     $instructionsTitle = if ($HallOnly) { '桌游大厅 · Windows x64 免安装版（纯大厅）' } else { '桌游大厅 · Windows x64 免安装版（程序包）' }
     $instructionsCommon = @'
 1. 完整解压文件夹，双击“桌游大厅.exe”。无需安装 Node.js。
@@ -102,6 +133,18 @@ if ($buildLogic) {
         $notes.Add('自动更新：大厅会定期检查新版本。在“设置 → 大厅更新”中可一键更新大厅，在大厅的“游戏中心”中安装或更新游戏；' + "`n   " + '新版本准备到旁边的 app-版本号 文件夹（只下载变化的文件），重启后切换，启动失败会自动回滚到上一版本。存档与设置始终保留在 user-data。')
     }
     $numbered = for ($i = 0; $i -lt $notes.Count; $i++) { "$($i + 7). $($notes[$i])" }
+    $signatureNote = if ($signature) {
+        '代码签名：本程序由 ' + $signature.SignerCertificate.Subject + ' 签名，Windows 可以验证发布者。'
+    } else {
+        (@(
+            '代码签名：本发布包没有商业代码签名证书，Windows 首次运行时可能提示「打开文件 - 安全警告」并显示「未知发布者」。'
+            '这不是病毒提示，只说明 Windows 无法确认发布者。消除方法：'
+            '  1. 解压前：右键下载的 ZIP → 属性 → 勾选「解除锁定」→ 确定，再解压；'
+            '  2. 已经解压：右键 桌游大厅.exe → 属性 → 勾选「解除锁定」；'
+            '  3. 或在本文件夹打开 PowerShell 运行：Get-ChildItem -Recurse -File | Unblock-File'
+            '不要为此关闭 SmartScreen 或整个系统的 UAC。'
+        ) -join "`n")
+    }
     $instructionsFooter = @'
 
 发布包不包含已有存档、个人 AI 角色、模型密钥、决策日志或浏览器数据。
@@ -115,7 +158,7 @@ if ($buildLogic) {
         $packTitles = (@($staged.games | ForEach-Object { $_.assetPacks }) | Where-Object { $_ }) -join '、'
         "包含$gameNames，以及界面图片和音乐资源" + $(if ($packTitles) { '（' + $packTitles + '单独发布）' } else { '' }) + "。`n游戏美术及音乐版权归各自权利人所有。"
     }
-    $instructions = $instructionsTitle + "`n`n" + $instructionsCommon + "`n" + ($numbered -join "`n") + "`n" + $instructionsFooter + "`n" + $instructionsContents + "`n"
+    $instructions = $instructionsTitle + "`n`n" + $instructionsCommon + "`n" + ($numbered -join "`n") + "`n`n" + $signatureNote + "`n`n" + $instructionsFooter + "`n" + $instructionsContents + "`n"
     [IO.File]::WriteAllText((Join-Path $releaseRoot '使用说明.txt'), $instructions, [Text.UTF8Encoding]::new($true))
     $files = @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -File)
     $forbidden = @($files | Where-Object { $_.FullName -match '(?i)[\\/](sessions|user-data)[\\/]|[\\/](boardgame\.config\.json|ais\.json|decisions\.jsonl)$|\.(log|tmp|bak)$' })
@@ -132,6 +175,14 @@ if ($buildLogic) {
         bundledSaves = $false
         bundledPersonalConfig = $false
         bundledAssetPacks = @()
+        signature = $(if ($signature) {
+            @{
+                status = [string]$signature.Status
+                signer = $signature.SignerCertificate.Subject
+                thumbprint = $signature.SignerCertificate.Thumbprint
+                timestamped = [bool]$signature.TimeStamperCertificate
+            }
+        } else { $null })
         files = @($files | ForEach-Object { $_.FullName.Substring($releaseRoot.Length + 1).Replace('\', '/') })
     }
     $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $releaseRoot 'build-manifest.json') -Encoding utf8

@@ -5,6 +5,7 @@ import { createChatNotifications, chatChannel } from './chat-notifications.js'
 import { chatCompletionContext, chatFilterOptions, chatMessageKey } from './chat-compose.js'
 import { createOnlineUI } from './online-ui.js'
 import { createUpdatesUI } from './updates-ui.js'
+import { createFeedbackUI } from './feedback-ui.js'
 
 const root = document.getElementById('app')
 const chatNotifications = createChatNotifications({
@@ -43,7 +44,9 @@ function loadModUi(game) {
     .then(([module]) => {
       // 宿主能力：DOM 构造、大厅 API、重绘与共享应用状态。Mod 只能用这些接口接入。
       const ui = module.createUI({ h, api, render, state, game, reset, leave, beginInteraction,
-        startGame, loadSavedSession, rememberSession, forgetSession, renderOnlineSetup: onlineUi.setupFields })
+        startGame, loadSavedSession, rememberSession, forgetSession, renderOnlineSetup: onlineUi.setupFields,
+        // Mod 可以在自己的标题栏里放反馈入口；宿主负责弹窗本身，旧版 Mod 不调用也不受影响。
+        openFeedback: () => feedbackUi.open() })
       modUis.set(game.id, ui)
       return ui
     })
@@ -230,6 +233,8 @@ const state = {
 
 const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi })
 const updatesUi = createUpdatesUI({ h, state, render, request: rawApi, reloadCatalog })
+// 反馈弹窗是 body 级 portal：挂在这里而不是 renderApp() 里，整页重绘时 iframe 不会被重建。
+const feedbackUi = createFeedbackUI({ h, state, request: rawApi })
 
 async function reloadCatalog() {
   try {
@@ -416,7 +421,7 @@ function renderLibrary() {
         '🧠 ' + (cfg.hasKey ? (cfg.model || '已配置') : '未配置模型') + (cfg.hasKey ? '' : '，AI 由本地引擎代替落子且不说话')
       )
     ),
-    h('div', { className: 'bg-online-entry' }, onlineUi.joinButton(), updatesUi.gameCenterButton()),
+    h('div', { className: 'bg-online-entry' }, onlineUi.joinButton(), updatesUi.gameCenterButton(), feedbackUi.button()),
     h('div', { className: 'bg-grid' },
       state.catalog.length === 0
         ? h('div', { className: 'bg-empty' }, '加载中…')
@@ -606,6 +611,7 @@ function renderSettingsModal() {
       tab === 'player' ? renderPlayerTab() : tab === 'online' ? onlineUi.settingsPanel() : tab === 'model' ? renderModelTab()
         : tab === 'updates' ? updatesUi.panel() : (tab === 'stats' ? renderStatsTab() : renderAiList()),
       h('div', { className: 'bg-modal-foot' },
+        h('button', { className: 'bg-btn secondary', onclick: () => feedbackUi.open() }, '💬 反馈'),
         h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = false; render() } }, '关闭'),
         tab === 'ais' ? h('button', { className: 'bg-btn', disabled: state.busy, onclick: createAi }, '➕ 新增 AI')
           : tab === 'stats' ? h('button', { className: 'bg-btn secondary', disabled: state.statsBusy, onclick: loadStats }, '🔄 刷新')
@@ -1218,6 +1224,7 @@ function renderGame(s) {
       h('div', { className: 'bg-game-title' }, s.modName),
       h('div', { className: 'bg-game-status' + (over ? ' bg-over' : '') }, statusText),
       h('div', { className: 'bg-game-actions' },
+        feedbackUi.iconButton(),
         h('button', { className: 'bg-btn secondary', disabled: s.online && s.mySeat !== 0, onclick: reset }, '再来一局'),
         h('button', { className: 'bg-btn secondary', onclick: leave }, '退出')
       )

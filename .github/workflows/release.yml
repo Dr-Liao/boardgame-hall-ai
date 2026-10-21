@@ -2,6 +2,8 @@
 # 诡镇奇谈等游戏各自发布，玩家从大厅的游戏商店安装，所以这里不签出游戏子模块。
 # 需要的仓库 Secret：
 #   BOARDGAME_UPDATE_PRIVATE_KEY  更新签名私钥（tools/release/keygen.mjs 生成）
+# 可选的仓库 Secret（Windows 代码签名，见 docs/windows-signing.md）：
+#   WINDOWS_SIGN_THUMBPRINT / WINDOWS_SIGN_COMMAND  构建时给 桌游大厅.exe 做 Authenticode 签名
 # 可选的 Cloudflare R2 同步（见 docs/updates.md）：仓库变量 R2_BUCKET、R2_ACCOUNT_ID + Secret R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY
 name: Release
 
@@ -24,6 +26,11 @@ jobs:
         shell: bash
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
       - name: Build hall-only portable package
+        env:
+          # 可选：配置后构建脚本会给 桌游大厅.exe 做代码签名（见 docs/windows-signing.md）。
+          # 没配置时照常产出未签名包，从网上下载后首次运行会显示「未知发布者」。
+          BOARDGAME_SIGN_THUMBPRINT: ${{ secrets.WINDOWS_SIGN_THUMBPRINT }}
+          BOARDGAME_SIGN_COMMAND: ${{ secrets.WINDOWS_SIGN_COMMAND }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows.ps1 -HallOnly
       - name: Split update packages
         shell: bash

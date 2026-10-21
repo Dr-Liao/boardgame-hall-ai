@@ -95,6 +95,8 @@ AI 通过 **OpenAI 兼容的 `/chat/completions` 接口**调用模型，支持 O
 
 构建产物输出到 `dist/`。Windows 程序包的构建需要 x64 Node.js 22.15+ 和 .NET Framework C# 编译器，资源包可以单独构建。
 
+Windows 首次运行可能提示「打开文件 - 安全警告」并显示「未知发布者」：这是 Windows 对从网上下载的未签名 EXE 的常规提醒。只在自己电脑上运行，右键 ZIP 或 EXE → 属性 → 勾选「解除锁定」即可；要发布给别人，需要给 EXE 做代码签名，两种办法和证书选择见 [Windows 的「未知发布者」提示](docs/windows-signing.md)。
+
 构建脚本不认识具体游戏：纯大厅版内置哪些游戏由 `package.json` 的 `boardgame.liteGames` 决定；游戏在自己的 `boardgame-mod.json` 里声明要拆成独立资源包的文件（`assetPacks`）和追加到使用说明的条目（`portableNotes`），格式见 `tools/release/stage-games.mjs` 顶部注释。
 
 ### 自动更新与游戏商店
@@ -140,6 +142,15 @@ AI 角色的核心是 `persona`（人设），这段文本会原样注入 system
 每次成功提交行动后，整局会写入 `<DSH_HOME 或 ~/.dsh>/boardgame-hall/sessions/<游戏 id>/<sessionId>.json`，每个游戏一个子目录（旧版直接放在 `sessions/` 下的存档会自动迁移过去）。进程重启或网页刷新后会回到上一局；损坏或版本不符的旧存档会被丢弃，不会阻断启动。
 
 存档默认保留 14 天，`BOARDGAME_PERSIST=0` 关闭持久化，`BOARDGAME_PERSIST_TTL_DAYS` 调整保留天数。退出对局会删除该局存档。
+
+### 反馈
+
+大厅右上角（对局里在标题栏；诡镇的战役页和牌桌在标题栏最右侧各有一个入口）的「💬 反馈」会打开内置弹窗，里面是飞书多维表格表单，提交后直接进「桌游大厅问卷」。
+
+- 「📋 一键复制诊断信息」复制大厅版本、系统、浏览器、当前游戏、时间和最近一条错误，粘贴到表单的「游戏环境」或「问题描述」即可；内容不含 API Key、密钥、存档路径或聊天记录。
+- 表单是跨域内嵌的：大厅不能预填，也读不到提交结果，看到「提交成功」再关闭弹窗。
+- 弹窗挂在 `document.body` 上，不参与大厅整页重绘，所以对局和设置里的重绘不会冲掉填到一半的内容。
+- 换表单只改 `public/feedback-ui.js` 里的 `FEISHU_FORM_URL`。
 
 ---
 
