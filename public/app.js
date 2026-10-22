@@ -20,6 +20,8 @@ let chatToastTimer
 const modUis = new Map()
 const modLoading = new Map()
 const modFailed = new Set()
+// 记住加载失败的原因：打开开局界面时不能把它清掉，否则玩家只看到「通用界面」却不知道哪里坏了。
+const modErrors = new Map()
 
 function modUiFor(game) {
   return game ? modUis.get(game.id) || null : null
@@ -52,6 +54,7 @@ function loadModUi(game) {
     })
     .catch(error => {
       modFailed.add(game.id)
+      modErrors.set(game.id, error.message)
       state.error = '加载「' + game.name + '」界面失败：' + error.message
       return null
     })
@@ -465,7 +468,8 @@ async function openSetup(game) {
     else form[s.key] = s.default != null ? s.default : game.defaults[s.key]
   }
   state.setup = { game, form }
-  state.error = null
+  // Mod 界面加载失败时保留原因：退回通用弹窗也要让玩家看见失败信息。
+  state.error = modErrors.get(game.id) || null
   modUiFor(game)?.onOpenSetup?.(game)
   render()
 }
@@ -1196,11 +1200,26 @@ async function deleteAi(id) {
 // 对局
 // ---------------------------------------------------------------------------
 
+// Mod 自带的界面模块加载失败时，非棋盘游戏没有可用的通用界面：
+// 不要让玩家永远停在「正在加载…」，把原因和退出口一起给出来。
+function modGameUnavailable(game, session) {
+  return !!game && modFailed.has(game.id) && !(session.render && session.render.kind === 'board')
+}
+
+function renderGameUnavailable(game, session) {
+  const detail = modErrors.get(game.id)
+  return h('div', { className: 'bg-empty' },
+    h('p', { role: 'alert' }, '「' + session.modName + '」的界面加载失败' + (detail ? '：' + detail : '。')),
+    h('p', null, '游戏文件可能缺失、版本过旧，或浏览器仍在使用旧缓存。刷新页面后若仍失败，请重新安装该游戏。'),
+    h('button', { className: 'bg-btn secondary', onclick: leave }, '返回大厅'))
+}
+
 function renderGame(s) {
   const game = state.catalog.find((g) => g.id === s.modId)
   // Mod 自带界面优先；大厅只兜底通用的方格棋盘。
   const custom = modUiFor(game)?.renderGame?.(s)
   if (custom) return custom
+  if (modGameUnavailable(game, s)) return renderGameUnavailable(game, s)
   if (modUiPending(game)) loadModUi(game)
   if (modUiPending(game) || (s.render && s.render.kind !== 'board')) {
     return h('div', { className: 'bg-empty' }, '正在加载「' + s.modName + '」的界面…')
