@@ -8,6 +8,9 @@ import { createUpdatesUI } from './updates-ui.js'
 import { createFeedbackUI } from './feedback-ui.js'
 
 const root = document.getElementById('app')
+const query = new URLSearchParams(location.search)
+// ?perf=1：渲染耗时埋点 + 基准钩子（Playwright 渲染回归用，正常使用不生效）。
+const PERF_RENDER = query.has('perf')
 const chatNotifications = createChatNotifications({
   load: id => JSON.parse(localStorage.getItem('boardgame-hall.chat-read.' + id) || 'null'),
   save: (id, cursors) => localStorage.setItem('boardgame-hall.chat-read.' + id, JSON.stringify(cursors)),
@@ -323,6 +326,16 @@ function patchAppWhileChatting(nextConsole, active) {
 }
 
 function render(options = {}) {
+  if (!PERF_RENDER) return renderNow(options)
+  const started = performance.now()
+  try {
+    return renderNow(options)
+  } finally {
+    ;(window.__HALL_RENDER_MS__ ||= []).push(performance.now() - started)
+  }
+}
+
+function renderNow(options = {}) {
   if (interactionHolds && options?.force !== true) {
     heldRenderPending = true
     return
@@ -1940,3 +1953,18 @@ async function boot() {
 }
 
 boot()
+
+// 渲染基准：在同一份状态上反复整树重绘，并强制同步布局，得到可对比的渲染耗时。
+if (PERF_RENDER) {
+  window.__HALL_RENDER_MS__ = window.__HALL_RENDER_MS__ || []
+  window.__HALL_BENCH_RENDER__ = (times = 20) => {
+    const out = []
+    for (let i = 0; i < times; i++) {
+      const started = performance.now()
+      render({ force: true })
+      document.body.offsetHeight
+      out.push(performance.now() - started)
+    }
+    return out
+  }
+}
