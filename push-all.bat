@@ -1,6 +1,7 @@
 @echo off
 REM 一键提交并推送大厅与诡镇奇谈的全部代码（双击运行）。
 REM 先提交并推送子模块，再提交大厅里的子模块指针，保证远端指针有效。
+REM 推送前会自动 fetch，落后就快进、分叉就把本地提交变基到远端之上。
 REM 可选参数 --yes：使用默认提交说明并跳过确认；--no-pause：结束时不暂停。
 setlocal EnableExtensions
 chcp 65001 >nul
@@ -97,6 +98,8 @@ if errorlevel 1 goto commit_failed
 echo   已提交。
 
 :arkham_push
+call :sync_branch "games\arkhamhorror" "%ARK_BRANCH%"
+if not "%SYNC_OK%"=="1" goto arkham_sync_failed
 echo   推送到 origin/%ARK_BRANCH%...
 git -C games\arkhamhorror push origin "%ARK_BRANCH%"
 if errorlevel 1 goto arkham_push_failed
@@ -115,6 +118,8 @@ if errorlevel 1 goto commit_failed
 echo   已提交。
 
 :hall_push
+call :sync_branch "" "%HALL_BRANCH%"
+if not "%SYNC_OK%"=="1" goto hall_sync_failed
 echo   推送到 origin/%HALL_BRANCH%...
 git push origin "%HALL_BRANCH%"
 if errorlevel 1 goto hall_push_failed
@@ -165,16 +170,27 @@ set "RESULT=1"
 goto finish
 
 :arkham_push_failed
-echo [错误] 推送诡镇奇谈失败。
-echo        - 若远端有新提交，请先运行 pull-latest.bat，再重试；
-echo        - 本地提交已保留，不会丢失。
+echo [错误] 推送诡镇奇谈失败（本地提交已保留，不会丢失）。
+echo        - 若是 rejected / behind：远端又有新提交，重新运行本脚本即可（会自动变基）；
+echo        - 若是 Could not resolve host / Connection：网络或代理问题，先确认能打开 github.com。
 set "RESULT=1"
 goto finish
 
 :hall_push_failed
 echo [错误] 推送大厅失败。
 echo        - 诡镇奇谈已经推送成功；大厅的本地提交仍在；
-echo        - 若远端有新提交，请先运行 pull-latest.bat，再重试。
+echo        - 若是 rejected / behind：重新运行本脚本即可（会自动变基）；
+echo        - 若是网络错误：检查代理或稍后重试。
+set "RESULT=1"
+goto finish
+
+:arkham_sync_failed
+echo [错误] 诡镇奇谈与远端同步失败，已停止推送（本地提交已保留）。
+set "RESULT=1"
+goto finish
+
+:hall_sync_failed
+echo [错误] 大厅与远端同步失败，已停止推送（本地提交已保留）。
 set "RESULT=1"
 goto finish
 
@@ -193,3 +209,70 @@ popd
 echo.
 if not defined NOPAUSE pause
 exit /b %RESULT%
+
+REM ---------------------------------------------------------------------------
+REM 推送前和远端对齐，避免 "Updates were rejected because the tip of your
+REM current branch is behind its remote counterpart"。
+REM   %1 = 子仓库相对路径（大厅传空 ""），%2 = 要推送的分支名
+REM   返回 SYNC_OK=1 表示可以继续推送，0 表示已停止
+REM ---------------------------------------------------------------------------
+:sync_branch
+set "SYNC_OK=1"
+set "SYNC_BR=%~2"
+set "SYNC_PUSHD="
+set "SYNC_FULLPATH=%~dp0"
+
+if "%~1"=="" goto sync_ready
+pushd "%~1" 2>nul
+if errorlevel 1 goto sync_bad_dir
+set "SYNC_PUSHD=1"
+set "SYNC_FULLPATH=%CD%"
+
+:sync_ready
+echo   检查远端 origin\%SYNC_BR% 是否有新提交...
+git fetch origin "%SYNC_BR%" --quiet 2>nul
+if errorlevel 1 goto sync_offline
+
+git rev-parse --verify --quiet "refs/remotes/origin/%SYNC_BR%" >nul 2>nul
+if errorlevel 1 goto sync_exit
+
+git merge-base --is-ancestor "origin/%SYNC_BR%" HEAD
+if not errorlevel 1 goto sync_exit
+
+git merge-base --is-ancestor HEAD "origin/%SYNC_BR%"
+if not errorlevel 1 goto sync_behind
+
+echo   本地与远端分叉，正在把本地提交变基到远端之上...
+git pull --rebase origin "%SYNC_BR%"
+if errorlevel 1 goto sync_conflict
+echo   变基完成。
+goto sync_exit
+
+:sync_behind
+echo   远端有新提交，正在快进...
+git merge --ff-only "origin/%SYNC_BR%"
+if errorlevel 1 goto sync_conflict
+echo   已快进到最新。
+goto sync_exit
+
+:sync_offline
+echo   [警告] 连不上远端，跳过同步检查（后面的 push 很可能也会失败）。
+goto sync_exit
+
+:sync_bad_dir
+echo   [警告] 无法进入子仓库 "%~1"，跳过同步检查。
+set "SYNC_OK=0"
+goto sync_exit
+
+:sync_conflict
+echo.
+echo   [错误] 与远端同步失败（多半是代码冲突），脚本已停止，避免把提交弄乱。
+echo          请到 "%SYNC_FULLPATH%" 手动处理：
+echo            git status
+echo            解决冲突后 git add -A 再 git rebase --continue
+echo            不想处理就 git rebase --abort 回到原样
+set "SYNC_OK=0"
+
+:sync_exit
+if defined SYNC_PUSHD popd
+goto :eof
