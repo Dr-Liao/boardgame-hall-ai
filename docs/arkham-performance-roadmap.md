@@ -209,7 +209,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 > 目标：单次命令 ≤ 300 KB，每次行动 status 总下行 ≤ 1.1 MB，房主阻塞 ≤ 150 ms。
 > 这一阶段不改延迟语义（仍然等 AI），只砍数据面。
-> **进度（2026-10-23）**：P1.1 ✅、P1.2 ✅、P1.3 ✅；P1.4 进行中、P1.5 待做。当前 100 步 p50（P1.3 后）：host 命令往返 241 ms、guest 241 ms、host 命令响应 1.15 MB / guest 0.1 KB、status 响应 1.22 MB、status 下行 3.65 MB、阻塞 190 ms、`publishOnline` 145 ms（基线 §1.6）。
+> **进度（2026-10-23）**：P1.1 ✅、P1.2 ✅、P1.3 ✅、P1.4 ✅；P1.5 待做（发布次数合并 + AI 连发）。当前 100 步 p50（P1.4 后）：host 命令往返 95 ms、guest 120 ms、host 命令响应 215.6 KB / guest 0.1 KB、status 响应 277.5 KB、status 下行 832.4 KB、阻塞 83.6 ms、`publishOnline` 45.8 ms —— **P1 出口的字节 / 阻塞 / 往返指标已全部达标**。
 
 #### P1.1 busy 轻量消息（0.5 天）
 
@@ -310,6 +310,15 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 - `view-privacy` 全绿，新增「公共表不含私有卡面」断言；
 - 刷新 / 换局 / 版本变化回全量；
 - 4 人 240 步。
+
+**状态：已完成（2026-10-23）** ✅
+
+- 实现：Mod 新增可选 `staticTables(state)`（只返回公共卡面）+ `viewState(state, seat, { includeStatic, publicCards, publicCardCodes })`。大厅会话级 `staticFor(session)` 懒生成并缓存 `{ version = mod@ver-sha256-短hash[-pN], cards, investigatorDefs }`，`cachedSessionView` 缓存键含静态表模式与版本；`/status` 按 `clientStatic`、`/command` 按 `body.client.staticVersion` 决定省略/补发，未声明=旧客户端全量；relay snapshot 对每个席位只在其版本未确认时携带一次 `static` 信封；guest 大厅 `receiveSnapshot` 缓存静态表，浏览器刷新后由 guest 大厅补发（缺表自动 `sync`）；公共自愈卡面走 `cardsPatch` → 合并进会话静态表并 bump 版本（允许一次全表重发），私有自愈卡面走 `privateCards` 只发观察者；`BOARDGAME_ONLINE_STATIC=0` 回滚；存档仍写全量。
+- 权威 harness（`--client=browser --moves=100`，p50）：host 命令响应 1154.0 → **215.6 KB**；`status` 1215.8 → **277.5 KB**；status 下行 3647.5 → **832.4 KB**；`publishOnline` 145 → **45.8 ms**；事件循环阻塞 189.7 → **83.6 ms**；host / guest 命令往返 241 / 241 → **95.2 / 120.2 ms**；结束视图 cards / investigatorDefs 0 KB、events 287 KB。
+- 一致性：Arkham hub 全量视图 970,764 B → 精简 9,779 B（1.0%）；inScenario 293,983 → 17,800 B；4 席 × 8 revision（hub / inScenario）hydrate 后与全量视图 `deepEqual`；大厅 fixture、Arkham、host/guest 两层缓存同口径验证。
+- 隐私 / 回滚：私有手牌自愈卡面只进 `privateCards`，公共表与其他席位视图不含；公共自愈卡走 `cardsPatch` 且所有席位一致；`view-privacy` + `architecture-guard` 23/23；`BOARDGAME_ONLINE_STATIC=0` 回全量；guest 刷新不触发 host 重发。
+- 门禁：大厅 133/133、浏览器 10/10（含客人刷新 hydrate）、Arkham `view-static` 3/3 + `hall-static` 1/1、Arkham hall-online 7/7。
+- 设计差异：用 `mod.staticTables` 显式返回公共表，而不是从某席位视图里提取（避免把私有卡面当公共表）；Arkham `index.js` 增加能力导出。剩余风险：旧存档的 `state.cards` 若在旧版本里被自愈塞过私有卡面，静态表会原样携带（与 P1.4 之前每份视图都带同样内容等价，不新增泄漏面）。
 
 #### P1.5 发布合并（1 天）
 
@@ -455,7 +464,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 | `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 90 ms | ≤ 70 ms | ≤ 60 ms |
 | 4 人命令往返 | 317 ms | ≤ 200 ms | ≤ 120 ms | — |
 
-> 当前进度（P1.3 后，harness 100 步 p50）：4 人命令往返 241 ms、命令响应 host 1.15 MB / guest 0.1 KB、status 下行 3.65 MB、阻塞 190 ms、`publishOnline` 145 ms。距 P1 出口：命令 ≤300 KB（P1.4）、status 下行 ≤1.1 MB（P1.4+P1.5）、阻塞 ≤150 ms（P1.5）、往返 ≤200 ms。
+> 当前进度（P1.4 后，harness 100 步 p50）：4 人命令往返 95 / 120 ms（host / guest）、命令响应 host 215.6 KB / guest 0.1 KB、status 下行 832.4 KB、阻塞 83.6 ms、`publishOnline` 45.8 ms —— P1 出口指标全部达标；P1.5 只负责把「一次行动 publish 次数 3」继续合并（主要收益在 AI 连续行动）。
 
 ### 5.2 每次提交必须跑
 
