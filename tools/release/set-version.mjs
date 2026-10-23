@@ -5,7 +5,7 @@
 //   --target=all     两边一起更新
 // 只替换版本字段，保持原文件格式。
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -63,10 +63,16 @@ function compare(a, b) {
 }
 
 const hall = readJson(FILES.hallPackage)
-const arkham = readJson(FILES.arkhamPackage)
-const arkhamManifest = readJson(FILES.arkhamManifest)
 
-if (arkham.version !== arkhamManifest.version) {
+// 诡镇奇谈是独立克隆，大厅发版不要求它存在；只有 --target=arkham|all 才必须。
+const hasArkham = existsSync(FILES.arkhamPackage) && existsSync(FILES.arkhamManifest)
+if (!hasArkham && target !== 'hall') {
+  fail('未找到 games/arkhamhorror，请先克隆诡镇奇谈：git clone https://github.com/Dr-Liao/boardgame-arkhamhorror.git games/arkhamhorror')
+}
+const arkham = hasArkham ? readJson(FILES.arkhamPackage) : null
+const arkhamManifest = hasArkham ? readJson(FILES.arkhamManifest) : null
+
+if (hasArkham && arkham.version !== arkhamManifest.version) {
   fail(
     `诡镇奇谈的 package.json 版本 ${arkham.version} 与 boardgame-mod.json 版本 ${arkhamManifest.version} 不一致，请先对齐`
   )
@@ -101,14 +107,17 @@ if (target !== 'arkham') {
   lockText = replaceVersion(lockText, TOP_VERSION, 'package-lock.json 顶层')
   lockText = replaceVersion(lockText, LOCK_ROOT, 'package-lock.json 大厅')
   // package-lock 里的诡镇奇谈条目镜像它自己的 package.json，跟随诡镇版本而不是大厅版本。
-  lockText = replaceVersion(lockText, LOCK_ARKHAM, 'package-lock.json 诡镇奇谈', arkham.version)
+  // 未克隆诡镇时保留原样，等下次带着诡镇发版再对齐。
+  if (hasArkham) lockText = replaceVersion(lockText, LOCK_ARKHAM, 'package-lock.json 诡镇奇谈', arkham.version)
 
   const hallAfter = parseJson(hallText, FILES.hallPackage)
   const lockAfter = parseJson(lockText, FILES.hallLock)
   assertVersion(hallAfter.version, version, 'package.json')
   assertVersion(lockAfter.version, version, 'package-lock.json 顶层')
   assertVersion(lockAfter.packages?.['']?.version, version, 'package-lock.json 大厅')
-  assertVersion(lockAfter.packages?.['games/arkhamhorror']?.version, arkham.version, 'package-lock.json 诡镇奇谈')
+  if (hasArkham) {
+    assertVersion(lockAfter.packages?.['games/arkhamhorror']?.version, arkham.version, 'package-lock.json 诡镇奇谈')
+  }
 
   changes.push([FILES.hallPackage, hallText], [FILES.hallLock, lockText])
 }
