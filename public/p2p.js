@@ -4,7 +4,7 @@ const STUN = 'stun:stun.cloudflare.com:3478'
 const PART_SIZE = 12000
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-export function createP2P({ request, onChange = () => {} }) {
+export function createP2P({ request, onChange = () => {}, perf = null }) {
   let current = null, roomKey = '', lastSignal = 0, signalChain = Promise.resolve(), unavailable = false, nextAttemptAt = 0, failures = 0
   const peers = new Map()
   const pending = new Map()
@@ -229,7 +229,9 @@ export function createP2P({ request, onChange = () => {} }) {
   function command(action, body) {
     const peer = peers.get(host()?.id)
     if (!active(peer) || !peer.ready) return Promise.reject(Object.assign(new Error('直连不可用'), { transport: true }))
-    return new Promise((resolve, reject) => {
+    // ?perf=1 时记录直连命令的总耗时（含等待本地 revision 的轮询）；未注入 recorder 时行为与原来完全一致。
+    const perfStarted = perf ? performance.now() : 0
+    const result = new Promise((resolve, reject) => {
       const id = crypto.randomUUID()
       const timer = setTimeout(() => { pending.delete(id); closePeer(peer); reject(Object.assign(new Error('直连操作超时'), { transport: true })) }, 180000)
       pending.set(id, { peer, resolve, reject, timer })
@@ -252,6 +254,9 @@ export function createP2P({ request, onChange = () => {} }) {
       closePeer(peer)
       throw Object.assign(new Error('直连状态未及时同步'), { transport: true })
     })
+    if (!perf) return result
+    const record = () => perf.recordCommand({ action, transport: 'direct', ms: performance.now() - perfStarted })
+    return result.then(value => { record(); return value }, error => { record(); throw error })
   }
   return { update, direct, command, status: () => own()?.host ? [...peers.values()].filter(active).length ? `直连 ${[...peers.values()].filter(active).length} 人` : '中转' : direct() ? '直连' : '中转' }
 }

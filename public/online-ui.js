@@ -1,7 +1,8 @@
 import { createP2P } from './p2p.js'
 
-export function createOnlineUI({ h, state, render, renderChrome = render, request, loadGame }) {
-  const p2p = createP2P({ request, onChange: renderChrome })
+export function createOnlineUI({ h, state, render, renderChrome = render, request, loadGame, perf = null }) {
+  // perf 是 app.js 在 ?perf=1 时注入的 createPerfRecorder()；不传时全部埋点分支都不执行。
+  const p2p = createP2P({ request, onChange: renderChrome, perf })
   let serial = -1, appliedSerial = -1, timer, working = false
   let renderQueued = false
   let instanceId
@@ -35,17 +36,22 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     })
   }
   function accept(value) {
+    // apply 的同步耗时：state.online/state.session 更新 + p2p.update；提前返回的旧响应也记一条（sessionChanged=false）。
+    const perfStarted = perf ? performance.now() : 0
+    const recordApply = sessionChanged => {
+      if (perf) perf.recordApply({ serial: value?.serial, sessionChanged, ms: performance.now() - perfStarted })
+    }
     const previousOnline = state.online
     const previousSession = state.session
     const previousView = state.view
     const previousInstance = instanceId
     if (value.instanceId && value.instanceId !== instanceId) {
-      if (retiredInstances.has(value.instanceId)) return { changed: false }
+      if (retiredInstances.has(value.instanceId)) { recordApply(false); return { changed: false } }
       if (instanceId) retiredInstances.add(instanceId)
       instanceId = value.instanceId; serial = -1; appliedSerial = -1
     }
     // A slower status request must not undo a newer snapshot or room closure.
-    if (value.serial < serial) return { changed: false }
+    if (value.serial < serial) { recordApply(false); return { changed: false } }
     let changed = serial !== value.serial
     const wasOnline = !!state.online?.room
     serial = value.serial; state.online = value
@@ -68,6 +74,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     const actionability = actionStamp(previousOnline) !== actionStamp(state.online)
     const mySeat = state.session?.mySeat
     const handoff = mySeat != null && decisionSeat(previousSession) !== mySeat && decisionSeat(state.session) === mySeat
+    recordApply(sessionChanged)
     return { changed, lifecycle, sessionChanged, actionability, handoff }
   }
   async function refresh(wait = false) {
@@ -185,16 +192,22 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     render()
   }
   async function command(action, body = {}) {
+    const perfStarted = perf ? performance.now() : 0
+    let transport = 'relay'
     try {
       const payload = { ...body, operationId: body.operationId || crypto.randomUUID() }
       let result
       if (p2p.direct() && ['move', 'chat'].includes(action)) {
+        transport = 'direct'
         try { result = await p2p.command(action, payload) }
         catch (error) {
+          transport = 'relay'
           if (!error.transport) throw error
           result = await request('POST', '/online/command', { action, body: payload })
         }
       } else result = await request('POST', '/online/command', { action, body: payload })
+      // 直连命令的总耗时由 p2p.command 记录（它还包含等待本地 revision 的轮询），这里只记中转路径，避免一次操作两条记录。
+      if (perf && transport === 'relay') perf.recordCommand({ action, transport, ms: performance.now() - perfStarted })
       await refresh()
       return result
     } catch (error) {

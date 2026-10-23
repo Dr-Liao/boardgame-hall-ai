@@ -11,6 +11,14 @@ const root = document.getElementById('app')
 const query = new URLSearchParams(location.search)
 // ?perf=1：渲染耗时埋点 + 基准钩子（Playwright 渲染回归用，正常使用不生效）。
 const PERF_RENDER = query.has('perf')
+// P0 联机性能埋点：只在 ?perf=1 时动态加载 public/perf.js，正常访问不下载、不额外汇总。
+// 用顶层 await 保证 recorder 在 boot() 之前就绪；加载失败只丢埋点，不影响大厅启动。
+const perf = PERF_RENDER ? await loadPerfRecorder() : null
+
+async function loadPerfRecorder() {
+  try { return (await import('./perf.js')).createPerfRecorder(window) } catch { return null }
+}
+
 const chatNotifications = createChatNotifications({
   load: id => JSON.parse(localStorage.getItem('boardgame-hall.chat-read.' + id) || 'null'),
   save: (id, cursors) => localStorage.setItem('boardgame-hall.chat-read.' + id, JSON.stringify(cursors)),
@@ -121,14 +129,34 @@ async function api(method, pathname, body) {
   return rawApi(method, pathname, body)
 }
 
+// perf 只在 /online/* 且 ?perf=1 时读响应文本以拿字节；非 perf 路径仍走 res.json()，不新增
+// await / 序列化开销，也不为埋点额外 clone 响应体（大响应只读一遍）。
+function responseBytes(text, contentLength) {
+  if (contentLength != null) {
+    const declared = Number(contentLength)
+    if (Number.isFinite(declared) && declared >= 0) return declared
+  }
+  return new TextEncoder().encode(text || '').length
+}
+
 async function rawApi(method, pathname, body) {
+  const onlineRequest = pathname.startsWith('/online/')
+  const trackPerf = !!perf && onlineRequest
+  const perfStarted = trackPerf ? performance.now() : 0
   const res = await fetch('/api' + pathname, {
     method,
-    headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(pathname.startsWith('/online/') ? { 'x-boardgame-online': '1' } : {}) },
+    headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(onlineRequest ? { 'x-boardgame-online': '1' } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
-  let data
-  try { data = await res.json() } catch { data = { ok: false, error: '响应解析失败' } }
+  let data, responseText = null
+  try {
+    if (trackPerf) { responseText = await res.text(); data = JSON.parse(responseText) }
+    else data = await res.json()
+  } catch { data = { ok: false, error: '响应解析失败' } }
+  if (trackPerf) {
+    perf.recordRequest({ path: pathname, method, ms: performance.now() - perfStarted,
+      bytes: responseBytes(responseText, res.headers.get('content-length')) })
+  }
   if (!data || data.ok !== true) {
     const error = new Error(data?.error || ('HTTP ' + res.status))
     Object.assign(error, { status: res.status, code: data?.code, session: data?.session, revision: data?.revision })
@@ -237,7 +265,7 @@ const state = {
   error: null,
 }
 
-const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi })
+const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi, perf })
 const updatesUi = createUpdatesUI({ h, state, render, request: rawApi, reloadCatalog })
 // 反馈弹窗是 body 级 portal：挂在这里而不是 renderApp() 里，整页重绘时 iframe 不会被重建。
 const feedbackUi = createFeedbackUI({ h, state, request: rawApi })
@@ -331,7 +359,9 @@ function render(options = {}) {
   try {
     return renderNow(options)
   } finally {
-    ;(window.__HALL_RENDER_MS__ ||= []).push(performance.now() - started)
+    const ms = performance.now() - started
+    ;(window.__HALL_RENDER_MS__ ||= []).push(ms)
+    perf?.recordRender(ms)
   }
 }
 
