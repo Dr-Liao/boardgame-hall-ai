@@ -209,6 +209,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 > 目标：单次命令 ≤ 300 KB，每次行动 status 总下行 ≤ 1.1 MB，房主阻塞 ≤ 150 ms。
 > 这一阶段不改延迟语义（仍然等 AI），只砍数据面。
+> **进度（2026-10-23）**：P1.1 ✅；P1.2 / P1.3 / P1.4 / P1.5 待做。当前 100 步 p50：host 命令往返 297 ms、guest 311 ms、命令响应 1.22 MB、status 下行 3.65 MB、阻塞 240 ms、`publishOnline` 197 ms（基线 §1.6）。
 
 #### P1.1 busy 轻量消息（0.5 天）
 
@@ -227,6 +228,13 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 **风险**：status 先于最终快照到达，导致按钮提前可用。客户端必须等 `revision` / `snapshotId` 匹配。
 
 **验收**：4 人 240 步 busy 切换正确；断线重连后 busy 一致。
+
+**状态：已完成（2026-10-23）** ✅
+
+- 实现：`lib/online.js` 新增 `publishStatus`（复用 `snapshot` 信封、`kind:'status'`，不写 `sentSnapshots`）；`receiveSnapshot` 按 `revision` 排序，busy/lobby 单独更新，先于快照到达的 status 暂存到 revision 匹配后再应用；`directSnapshot` 接受无 `snapshotId` 的 status 包。`lib/server.js` 的 `publishOnline` 在「内容相同、仅 busy 变化」时改发 status；开关 `BOARDGAME_ONLINE_BUSY=0` 回滚。
+- 实测（同机 harness 100 步 p50）：`publishOnline` 耗时 283.5 → 196.9 ms（−31%）；每动作实际 `publish.member` 6 → 3 次；host 命令往返 388 → 297 ms（−23%）；guest 434 → 311 ms（−28%）；推进墙钟 52.8 → 39.6 s。字节面不变（命令/status 仍 1.2 MB，留给 P1.2/P1.4）。
+- 与设计差异：没有引入 `snapshotId`，只按 `revision` 排序（status 使用的 revision 就是快照 revision，足以拒绝旧状态；`snapshotId` 不随 status 传递）。客户端无需改 `online-ui.accept`：status 只更新客人大厅的运行状态，浏览器仍然通过 `/status` 看到 `busy`。
+- 门禁：`tests/hall/online-busy.test.mjs`（轻量 status + 增量基线不被污染 + 开关回滚 2 例）；大厅 126/126；浏览器 `online.browser.mjs` 回归。
 
 #### P1.2 命令响应瘦身 + 去掉命令后的 refresh（1 天）
 
