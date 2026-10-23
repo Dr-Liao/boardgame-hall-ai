@@ -1,6 +1,6 @@
 # 诡镇联机性能优化路线（2026-10 重写）
 
-> 状态：执行中；P0（基线 + 仪表 + harness）已完成（2026-10-23），P1（字节与重复发布）、P2（延后与解耦，P2.1–P2.3）已完成并达成出口指标（2026-10-24），下一阶段 P3（可选）。
+> 状态：执行中；P0（基线 + 仪表 + harness）已完成（2026-10-23），P1（字节与重复发布）、P2（延后与解耦，P2.1–P2.3）已完成并达成出口指标（2026-10-24）；P3（可选深度优化）部分达成：P3.1 status 增量 ✅（下行 832→53.5 KB/行动）、P3.3 直连命令 slim + 等待者修正 ✅（8–9 ms）、P3.2 A1′ 已实现默认关闭（实测收益不足）、P3.4 网络运维清单已文档化；server 全量视图 `publishOnline` 基准未达 60 ms（见 §P3 出口）。
 > 范围：大厅 + 诡镇 Mod 的**联机热路径**；不含规则引擎优化、卡图加载、单机存档压缩。
 > 基线：2026-10-23 手工实测（4 真人、夜之狂热第一关、revision 100–123）；P0 已用新 harness 复现并冻结，见 §1.6。
 
@@ -440,6 +440,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 **状态：已完成（2026-10-24）** ✅
 
 - 实现：`public/p2p.js` 新增 `revisionWaiters`；直连命令拿到 result 后不再每 100 ms 拉 `/online/status`，由 `POST /online/direct-snapshot` 返回的 status 或既有 status 长轮询即时唤醒；快照先于 result 到达时立即 resolve；15 s 超时只兜底拉一次 status，仍失败回退中转。对端断开/重置时 reject 等待者，避免 Promise 悬挂。
+- P3.3 修正（2026-10-24）：命令结果改为 slim 摘要后，`waitTarget` 归一化「slim 摘要 / 旧全量结果」两种形状；快照先到则立即 resolve（`resolvedImmediately`）；浏览器用例断言 timeouts/fallback=0。
 - 诊断：`window.__P2P_STATS__` 记录 waits / resolvedBySnapshot / resolvedByStatus / fallbackStatusFetches / timeouts，浏览器回归据此断言「事件唤醒、零轮询、零兜底」。
 - 门禁：`online.browser.mjs` 直连用例新增统计断言并通过（waits>0、timeouts=0、fallbackStatusFetches=0）；浏览器全套 10/10；大厅 140/140。
 - 说明：harness 走本机 relay，不覆盖直连路径；直连收益用浏览器用例与 `__P2P_STATS__` 验证。
@@ -464,6 +465,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 ### P3 深度优化（2–3 天，可选）
 
 > 只有 P1 / P2 后仍不达标才做；每项独立评估。
+> **进度（2026-10-24）**：P3.1 ✅（status 增量，下行 832→53.5 KB/行动）、P3.3 ✅（直连命令 slim + 等待者形状修正，直连 8–9 ms）、P3.4 ⚠️（运维清单文档化）；P3.2（A1′ 共享 clone）进行中。
 
 #### P3.1 浏览器 status 增量（1–1.5 天）
 
@@ -473,6 +475,13 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 - 预期 status ≤ 40 KB，解析 −80%。
 - 风险：基线错位显示旧状态；失败模式必须是「变慢不变错」。
 
+**状态：已完成（2026-10-24）** ✅
+
+- 实现：`/api/online/status` 接受 `baseStamp=sessionId:revision:eventCount[:staticVersion]`；命中服务器基线时，内容未变回 `{ sessionOmitted:true, stamp }`（只保留 busy/lobby/aiPending/static），变化回 `{ sessionDelta:{stamp,baseStamp,changes}, stamp }`（`snapshotChanges`，通常几 KB）；未声明 `baseStamp` 的旧客户端、基线不匹配、增量不够小、异常一律回全量。`BOARDGAME_ONLINE_STATUS_DELTA=0` 回滚。
+- 客户端：新增 `public/online-delta.js`（stamp + 应用增量，可 Node 单测）；`app.js` 每次 status 带 `baseStamp`，先应用增量再走 P1.4 静态表 hydration；`online-ui.accept` 处理 `sessionOmitted`（保留会话、只刷新 busy/lobby 等在线状态）。
+- 实测（harness 100 步 p50）：status 响应 **277.5 KB → 17.8 KB**；每次行动 status 下行 **832.4 KB → 53.5 KB**（p95 300.8 KB，P3 出口 ≤100 KB 达成）。
+- 门禁：`tests/hall/online-delta.test.mjs` 4/4（stamp/增量/非法回退）、`online-status-delta.test.mjs` 3/3（旧客户端全量、omitted、行动后 delta 应用后与全量 deepEqual（host/guest）、基线不符回全量、回滚开关）；大厅 155/155；浏览器 10/10（static.browser 断言大响应之后的 status < 2 KB）。
+
 #### P3.2 A1′ 共享 state clone（0.5–1 天）
 
 - `viewStateSharesState` 逐 Mod 开关；每 revision 只 `structuredClone(state)` 一次，四席共用。
@@ -480,17 +489,54 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 - 预期 −15 ms / publish。
 - 风险：Mod 写共享 state；默认关闭，Arkham 先开。
 
+**状态：已实现，默认关闭（2026-10-24）** ✅ / ⚠️
+
+- 实现：hall `BOARDGAME_ONLINE_SHARED_VIEW=1`（默认关）+ Mod 能力 `viewStateSharesState`；按权威 state 的对象身份缓存 `structuredClone(state)`，每 revision 至多一次、同一 revision 的多席位/多次发布共用；能力缺失/开关关/共享异常回退逐席位浅拷贝，逐席位也异常回全量（失败模式只能是变慢）。Arkham `observation.js` 支持 `stateIsolated` 浅拷贝、cards 自愈改视图侧 copy-on-write（不再写回入参 state，全量路径同样生效），`index.js` 声明能力。
+- 硬断言：fixture 探针证明每 revision 恰一份隔离副本、四席位共用、视图生成期间权威 state JSON 哈希不变、无探针污染；hydrate 后与全量视图逐字节一致；Arkham 在 deepFreeze 的权威 state 下生成视图不报错、哈希不变。
+- A/B（4 人 100 步，p50 / mean，on−off）：`publishMs` 33.7/32.3 → 33.2/31.9（**−0.5 / −0.4 ms**），事件循环阻塞 47.4/48.1 → 54.1/53.6（**+6.7 / +5.5 ms**），host 命令往返 +3.1/+5.2 ms、guest +7.6/+8.3 ms，字节不变；重复一次同向，`--ai=2` 在噪声内。
+- 结论：**默认关闭**。P1.4 后单席位深拷大表已消失，A1′ 只换来 −0.5 ms，反而抬高阻塞与往返（副本缓存与额外分支成本 > 省下的浅拷贝）；保留实现与 Arkham「绝不写权威 state」的正确性修复，需要时 `BOARDGAME_ONLINE_SHARED_VIEW=1` 打开（生产无哈希校验，Mod 若写共享副本会串席，风险自负）。
+- 门禁：大厅 160/160（新增 5 例）、Arkham 定向 33/33（新增 6 例）、浏览器 10/10；`BOARDGAME_ONLINE_SHARED_VIEW=1` 下 Arkham hall-static 1/1、hall-online（4 人 240 步）7/7。
+
 #### P3.3 直连转发零拷贝（1 天）
 
 - 房主浏览器不再 `JSON.parse` / `stringify` 每个 snapshot；服务端切 12 KB 片或浏览器按字符串切片。
 - 预期 −5–15 ms / 客人。
 - 风险：校验 / 分片边界；保留解析兜底。
 
+**状态：评估后采用等价更小改动（2026-10-24）** ✅ / ⏭️
+
+- 评估：直连大头的不是 snapshot 转发的两次解析（200 KB JSON.parse/stringify 各约 0.5 ms），而是 **直连命令结果回传整份视图**（此前客人命令的结果经 DataChannel 回传整份个人视图，`waitForRevision` 还依赖全量结果字段）。真正零拷贝转发需要改帧协议 + 校验兜底，预计收益 <5 ms，风险高于收益，暂不做。
+- 已做（等价收益、风险更低）：`p2p.command` 给直连命令补 `body.client.slim`，房主只回 `{sessionId, revision, eventCount, busy}` 摘要，DataChannel 不再传整份视图；`waitForRevision` 统一归一化「slim 摘要 / 旧全量结果」两种目标形状，修复了直连命令 Promise 可能悬挂 15 s 的缺陷（此前靠轮询/超时兜底，P2.3 浏览器用例未断言 resolved）。
+- 实测：浏览器直连用例 `[direct]` 命令耗时 **8–8.7 ms**（目标 ≤300 ms），`__P2P_STATS__` 无 timeout/false fallback；用 `?perf=1` 在浏览器用例中断言 <300 ms
+- 后续若真实跨网直连仍不达标，再考虑完整零拷贝帧协议（保留解析兜底、按 peer capability 协商）。
+
 #### P3.4 网络（非代码）
 
 - Render 付费 / 换区域、自建 relay、TURN 提高直连率。
 - 预期中转客人 −250–300 ms。
 - 验收：真实跨网一次建房 / 加入 / 落子。
+
+**状态：文档化（2026-10-24，需运维执行）** ⚠️
+
+- 本仓库代码侧已无可做项（relay 与直连代码 P1–P3 已优化）；剩余收益来自部署位置，无法在本地跑分验证。
+- 建议执行清单：①Render relay 换到与房主同区域/付费实例（免费实例休眠 + 跨洋 RTT 是最大变量）；②支持自建 relay（`BOARDGAME_RELAY_URL` 已可配置，文档补一条自建步骤）；③部署 TURN（环境变量已支持 ICE 配置，提升对称 NAT 下直连率，减少中转客人）；④上线前用真实跨网 4 人局验收一次建房 / 加入 / 落子并记录 RTT。
+- 验收方式：同一脚本 `tools/perf-online-latency.mjs` 只测本机，跨网需另记；以真实 4 人局的手工 RTT 为准。
+
+#### P3 出口
+
+- status 每次行动总下行 ≤ 100 KB；中转客人点击 → 屏幕 ≤ 450 ms；`publishOnline`（4 席 / 250 步）≤ 60 ms。
+
+**状态：部分达成（2026-10-24）** ⚠️
+
+| P3 出口指标 | 目标 | 实测 | 结论 |
+| --- | --- | --- | --- |
+| 每次行动 status 总下行 | ≤ 100 KB | **53.5 KB**（harness 100 步 p50；P1/P2 时 832.4 KB） | ✅ |
+| 直连客人命令（浏览器 `?perf=1`） | ≤ 300 ms（P2 口径） | **8–8.7 ms** | ✅ |
+| `publishOnline`（4 席 / 250 步） | ≤ 60 ms | 142 ms 均值 / 94 ms 最近（`tools/perf-online-snapshot.mjs`） | ❌ |
+| 中转客人点击 → 屏幕 | ≤ 450 ms | 本机不可测 | ⚠️ 需真实跨网验收 |
+
+- `publishOnline` 未达标的原因：该基准仍走 P1.4 之前的**全量视图**路径（每步 4 席各自深拷 state + viewEvents + stringify）；线上联机走 P1.4 slim + 静态表一次下发，harness 实测 `publishMs` 33–39 ms/动作（2 次发布，单次约 17–20 ms）。若要让该基准达标，需要把 slim/共享 clone（P3.2）用于基准路径或改写基准口径；按「失败模式只能是变慢」原则未强推默认开启。
+- 结论：P3 的线上收益项（status 下行）达成；直连命令已远低于目标；服务器全量视图热路径基准未达 60 ms，保持记录、不阻塞上线；跨网指标转 P3.4 运维验收。
 
 ### P4 渲染（条件触发，2–3 天）
 
@@ -515,11 +561,13 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 | AI 行动确认 | 5–30 s | 5–30 s | ≤ 200 ms | — |
 | 房主事件循环阻塞 | 291 ms | ≤ 150 ms | ≤ 80 ms | — |
 | 单次命令响应 | 1.10 MB | ≤ 300 KB | ≤ 300 KB | — |
-| 每次行动 status 总下行 | 3.3 MB | ≤ 1.1 MB | ≤ 1.1 MB | ≤ 100 KB |
-| `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 90 ms | ≤ 70 ms | ≤ 60 ms |
+| 每次行动 status 总下行 | 3.3 MB | ≤ 1.1 MB | ≤ 1.1 MB | ≤ 100 KB → **53.5 KB ✅** |
+| `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 90 ms | ≤ 70 ms | ≤ 60 ms → **142 ms 均值 / 94 ms 最近 ❌** |
 | 4 人命令往返 | 317 ms | ≤ 200 ms | ≤ 120 ms | — |
 
-> 当前进度（P2 后，harness 100 步 p50）：4 人命令往返 86.4 / 117.4 ms（host / guest）、命令响应 host 215.6 KB / guest 0.1 KB、status 下行 832.4 KB、阻塞 50.9 ms、`publishOnline` 35.9 ms / 2 次每行动；AI 动作在 stub 3 s 模型延迟下 **22.1 ms** 返回 aiPending（AI 完成由后台快照送达）—— **P1、P2 出口指标全部达成**。
+> 当前进度（P3 后，harness 100 步 p50）：4 人命令往返 98.2 / 124.6 ms（host / guest，含本次测量噪音；P2 记录为 86.4 / 117.4）、命令响应 host 215.6 KB / guest 0.1 KB、**status 下行 53.5 KB/行动**（P1/P2 时 832.4 KB）、阻塞 55.8~59.3 ms、`publishOnline` 35.9 ms / 2 次每行动；直连命令 **8–8.7 ms**（浏览器）；AI 动作在 stub 3 s 模型延迟下 22.1 ms 返回 aiPending。
+>
+> P3 结论：**status 下行（53.5 KB ≤ 100 KB）与直连客人（8–9 ms ≪ 300 ms）达成**；`publishOnline（4 席 / 250 步）` 基准未达 60 ms——该工具仍走 P1.4 之前的全量视图路径（每步 4 席深拷 + viewEvents），线上联机实际走 slim 发布实测 33–39 ms/动作（2 次发布，单次约 17–20 ms）；P3.2 A1′ 能力已实现但默认关闭（见 §P3.2）；中转客人跨网指标本机不可测，需真实跨网验收（§P3.4）。
 
 ### 5.2 每次提交必须跑
 
@@ -571,7 +619,7 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 | P0 ✅ | harness + 仪表 + 基线（2026-10-23 完成） | 1–1.5 天 | host 命令往返 p50 388 ms、阻塞 241 ms、status 下行 3.7 MB（§1.6） |
 | P1 ✅ | busy / slim / 序列化 / 静态表 / 合并（2026-10-24 完成） | 3–4 天 | 命令响应 host 215.6 KB / guest 0.1 KB；status 下行 832.4 KB；阻塞 51.1 ms；往返 95/118 ms（§P1 出口） |
 | P2 ✅ | 延后 / AI 解耦 / p2p 事件（2026-10-24 完成） | 2.5–4 天 | AI 确认 22.1 ms（3 s 模型延迟）、host 往返 86.4 ms、阻塞 50.9 ms；直连零轮询（§P2 出口） |
-| P3 | status delta / A1′ / 零拷贝 / 网络 | 2–3 天 | status ≤ 100 KB；relay ≤ 450 ms |
+| P3 ⚠️ | status delta / A1′ / 零拷贝 / 网络（2026-10-24 部分达成） | 2–3 天 | status 53.5 KB ✅、直连 8–9 ms ✅、publishOnline 全量基准 142 ms ❌、跨网待验收（§P3 出口） |
 | P4 | 区域渲染（条件） | 2–3 天 | render p95 ≤ 8 ms |
 
 ## 7. 上线
@@ -606,7 +654,7 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 ### 9.2 关键文件
 
 - 大厅：[lib/server.js](../lib/server.js)（`sessionView` / `cachedSessionView` / `publishOnline` / `onlineCommand` / `snapshotSession`）、[lib/online.js](../lib/online.js)（`publish` / `command`）、[lib/online-sync.js](../lib/online-sync.js)、[lib/perf.js](../lib/perf.js)（P0 埋点，`BOARDGAME_PERF=1`）。
-- 浏览器：[public/online-ui.js](../public/online-ui.js)（`accept` / `command` / `refresh`）、[public/p2p.js](../public/p2p.js)（`command` / `receive`）、[public/app.js](../public/app.js)（`render` / `rawApi`）、[public/perf.js](../public/perf.js)（`?perf=1` → `window.__ONLINE_PERF__`）。
+- 浏览器：[public/online-ui.js](../public/online-ui.js)（`accept` / `command` / `refresh`）、[public/online-delta.js](../public/online-delta.js)（P3.1 status 增量的 stamp / apply，可 Node 单测）、[public/p2p.js](../public/p2p.js)（`command` / `receive` / `waitForRevision`）、[public/app.js](../public/app.js)（`render` / `rawApi`）、[public/perf.js](../public/perf.js)（`?perf=1` → `window.__ONLINE_PERF__`）。
 - Mod：[games/arkhamhorror/src/integration/observation.js](../games/arkhamhorror/src/integration/observation.js)（`viewState` / `pick`）。
 - 基准：[tools/perf-online-snapshot.mjs](../tools/perf-online-snapshot.mjs)、[tools/perf-online-latency.mjs](../tools/perf-online-latency.mjs)（P0 主 harness）、[games/arkhamhorror/tests/render-perf.browser.mjs](../games/arkhamhorror/tests/render-perf.browser.mjs)；冻结基线 `artifacts/perf/baseline-20261023.json`（本地）。
 
