@@ -143,10 +143,22 @@ async function rawApi(method, pathname, body) {
   const onlineRequest = pathname.startsWith('/online/')
   const trackPerf = !!perf && onlineRequest
   const perfStarted = trackPerf ? performance.now() : 0
-  const res = await fetch('/api' + pathname, {
+  // P1.4：声明浏览器已缓存的公共静态表版本（status 用查询参数；command 用 body.client.staticVersion）。
+  // 永远带上声明（即使为空），大厅据此区分「新客户端但没有缓存」（补发 static）与旧客户端（全量）。
+  let requestPath = pathname
+  let requestBody = body
+  if (onlineRequest) {
+    const version = currentStaticVersion()
+    const separator = pathname.includes('?') ? '&' : '?'
+    requestPath = pathname + separator + 'clientStatic=' + encodeURIComponent(version)
+    if (method === 'POST' && pathname === '/online/command' && body && typeof body === 'object' && body.body && typeof body.body === 'object') {
+      requestBody = { ...body, body: { ...body.body, client: { ...(body.body.client || {}), staticVersion: version } } }
+    }
+  }
+  const res = await fetch('/api' + requestPath, {
     method,
-    headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...(onlineRequest ? { 'x-boardgame-online': '1' } : {}) },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers: { ...(requestBody !== undefined ? { 'content-type': 'application/json' } : {}), ...(onlineRequest ? { 'x-boardgame-online': '1' } : {}) },
+    body: requestBody !== undefined ? JSON.stringify(requestBody) : undefined,
   })
   let data, responseText = null
   try {
@@ -157,6 +169,8 @@ async function rawApi(method, pathname, body) {
     perf.recordRequest({ path: pathname, method, ms: performance.now() - perfStarted,
       bytes: responseBytes(responseText, res.headers.get('content-length')) })
   }
+  // P1.4：把 static 信封记进本地缓存，并让所有调用方（accept / 直连命令 / p2p 轮询）都拿到 hydrate 后的会话。
+  if (onlineRequest) hydrateOnlinePayload(data)
   if (!data || data.ok !== true) {
     const error = new Error(data?.error || ('HTTP ' + res.status))
     Object.assign(error, { status: res.status, code: data?.code, session: data?.session, revision: data?.revision })
@@ -265,7 +279,64 @@ const state = {
   error: null,
 }
 
-const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi, perf })
+// ---------------------------------------------------------------------------
+// P1.4：联机公共静态表（cards / investigatorDefs）只下发一次
+//
+// 大厅在会话首份响应里带 static:{version, cards, investigatorDefs}，之后只带 staticVersion；
+// 浏览器按 sessionId 缓存这两张表，在把会话交给界面渲染前 hydrate 回去（引用缓存对象，不深拷）。
+// 每次 /online/* 请求都声明本地缓存的版本（没缓存就声明空串，表示「支持省略协议但请给全量表」），
+// 版本不符/未命中时大厅会随响应补发 static 信封——失败模式只会是「多下一次全量」，不会画错状态。
+// ---------------------------------------------------------------------------
+const staticTables = new Map()
+const STATIC_CACHE_LIMIT = 4
+
+function currentStaticVersion() {
+  const sessionId = state.session?.sessionId
+  if (!sessionId) return ''
+  return staticTables.get(sessionId)?.version || ''
+}
+
+function rememberStaticTables(payload) {
+  const info = payload?.static
+  const sessionId = payload?.session?.sessionId
+  if (!info || !sessionId || typeof info.version !== 'string' || !info.cards || typeof info.cards !== 'object') return
+  staticTables.delete(sessionId)
+  staticTables.set(sessionId, { version: info.version, cards: info.cards, investigatorDefs: info.investigatorDefs || {} })
+  while (staticTables.size > STATIC_CACHE_LIMIT) staticTables.delete(staticTables.keys().next().value)
+}
+
+/** 把精简视图恢复成可直接渲染的完整视图；本地没有匹配版本的静态表时返回 null（等下一次带表的响应）。 */
+function hydrateOnlineSession(session) {
+  if (!session || typeof session !== 'object') return session
+  const version = typeof session.staticVersion === 'string' ? session.staticVersion : null
+  if (!version) return session  // 旧客户端/回滚/无能力 Mod：响应本来就是完整视图
+  const cached = staticTables.get(session.sessionId)
+  const stateValue = session.state
+  if (!stateValue || typeof stateValue !== 'object') return session
+  if (!cached || cached.version !== version) {
+    // 已经是完整视图（例如回滚开关中途切换）时保持不变，等大厅补发静态表。
+    if (stateValue.cards && stateValue.investigatorDefs) return session
+    return null
+  }
+  const privateCards = stateValue.privateCards
+  const cards = privateCards && typeof privateCards === 'object' && Object.keys(privateCards).length
+    ? { ...cached.cards, ...privateCards }
+    : cached.cards
+  return { ...session, state: { ...stateValue, cards, investigatorDefs: cached.investigatorDefs } }
+}
+
+function hydrateOnlinePayload(payload) {
+  if (!payload || typeof payload !== 'object') return payload
+  rememberStaticTables(payload)
+  if (payload.session) {
+    const hydrated = hydrateOnlineSession(payload.session)
+    if (hydrated) payload.session = hydrated
+  }
+  return payload
+}
+
+const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi, perf,
+  hydrate: hydrateOnlineSession })
 const updatesUi = createUpdatesUI({ h, state, render, request: rawApi, reloadCatalog })
 // 反馈弹窗是 body 级 portal：挂在这里而不是 renderApp() 里，整页重绘时 iframe 不会被重建。
 const feedbackUi = createFeedbackUI({ h, state, request: rawApi })

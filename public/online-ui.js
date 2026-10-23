@@ -1,6 +1,6 @@
 import { createP2P } from './p2p.js'
 
-export function createOnlineUI({ h, state, render, renderChrome = render, request, loadGame, perf = null }) {
+export function createOnlineUI({ h, state, render, renderChrome = render, request, loadGame, perf = null, hydrate = null }) {
   // perf 是 app.js 在 ?perf=1 时注入的 createPerfRecorder()；不传时全部埋点分支都不执行。
   const p2p = createP2P({ request, onChange: renderChrome, perf })
   let serial = -1, appliedSerial = -1, timer, working = false
@@ -59,13 +59,18 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     if (!relayUrl && value.relayUrl) setAddress(value.relayUrl)
     if (value.room) {
       state.setup = null
-      if (value.session && !state.busy && !(state.chat.pendings || []).length) {
+      // P1.4：应用会话前先 hydrate 公共静态表；本地没有匹配版本时保留当前完整视图，
+      // 等大厅在后续响应里补发 static（失败模式只会是「慢一拍」，不会把精简会话当完整视图渲染）。
+      const nextSession = value.session ? (hydrate ? hydrate(value.session) : value.session) : null
+      if (value.session && !nextSession) {
+        // 等静态表；本次不应用这份精简会话。
+      } else if (nextSession && !state.busy && !(state.chat.pendings || []).length) {
         // Busy actions defer applying snapshots, not just rendering them.
         // Remember that deferred work even if its serial was already observed.
         changed ||= appliedSerial !== value.serial
-        state.session = value.session; state.view = 'game'
+        state.session = nextSession; state.view = 'game'
         appliedSerial = value.serial
-        loadGame(state.catalog.find(g => g.id === value.session.modId))
+        loadGame(state.catalog.find(g => g.id === nextSession.modId))
       } else if (!value.session) { state.session = null; state.view = 'room' }
     } else if (wasOnline) { state.session = null; state.view = 'library'; state.error = value.error || null; appliedSerial = -1 }
     const lifecycle = previousInstance !== instanceId || !!previousOnline?.room !== !!state.online?.room
