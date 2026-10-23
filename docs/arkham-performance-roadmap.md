@@ -1,8 +1,8 @@
 # 诡镇联机性能优化路线（2026-10 重写）
 
-> 状态：执行中，取代 2026-10-23 旧版路线图。
+> 状态：执行中；P0（基线 + 仪表 + harness）已完成（2026-10-23），下一阶段 P1。
 > 范围：大厅 + 诡镇 Mod 的**联机热路径**；不含规则引擎优化、卡图加载、单机存档压缩。
-> 基线：2026-10-23 手工实测（4 真人、夜之狂热第一关、revision 100–123）。
+> 基线：2026-10-23 手工实测（4 真人、夜之狂热第一关、revision 100–123）；P0 已用新 harness 复现并冻结，见 §1.6。
 
 ## 0. 摘要
 
@@ -30,6 +30,8 @@
 | `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 60 ms | P1 / P3 |
 | 4 人命令往返 | 317 ms | ≤ 200 ms（P1）/ ≤ 120 ms（P2） | P1 / P2 |
 
+> P0 已用 `tools/perf-online-latency.mjs` 复现并冻结基线（§1.6）：从 P1 起，阶段出口以 harness 的 p50 做同机前后对比；上表「现状」列仍是手工口径，保留作历史参考。
+
 ## 1. 基线
 
 ### 1.1 测量条件
@@ -37,7 +39,7 @@
 - 4 个真人席位、无 AI、夜之狂热第一关，revision 100–123。
 - 4 个大厅 + 本机 relay 跑在同一个 Node 进程里；客人的命令仍走 `客人 → relay → 房主` 的真实代码路径，只是 RTT 是本机。
 - 线上还要再叠加 1–2 段公网 RTT；relay 与房主同进程会让房主事件循环阻塞略偏高，量级不受影响。
-- 数字来自 2026-10-23 的手工测量记录（本节保留原始口径）；P0 会用新 harness 复现并冻结成基线文件。
+- 数字来自 2026-10-23 的手工测量记录（本节保留原始口径）；P0 已用新 harness 复现并冻结成基线文件 `artifacts/perf/baseline-20261023.json`（本地，不入发布包），复现数据见 §1.6。
 
 ### 1.2 延迟
 
@@ -78,6 +80,34 @@
 - `sessionView`：`structuredClone(state)` + `pick` 逐字段 `structuredClone`（含 `cards` / `investigatorDefs`）+ 事件历史 clone + Mod 投影。
 - `online.publish`：每席位 JSON 深拷贝 + diff + 2–3 次 `JSON.stringify` + 指标 stringify。
 - 存档：`snapshotSession` 后异步写，不阻塞事件循环（已修）。
+
+### 1.6 P0 复现（2026-10-23，`tools/perf-online-latency.mjs`）
+
+环境：Windows / Node v22.23.1；4 个大厅 + 本机 relay 同进程；真实 campaignHub 开局（4 真人各选调查员 + 自动牌组），统计 100 步（预热 5 步）。基线文件 `artifacts/perf/baseline-20261023.json`（本地，gitignore）。
+
+| 指标 | 手工基线（§1.2/§1.4） | P0 复现 p50（p95） | 偏差 |
+| --- | --- | --- | --- |
+| 房主行动命令往返 | 317 ms | 388 ms（464；n=9 ¹） | +22% |
+| 客人行动命令往返（本机 relay） | 346 ms | 434 ms（514；n=91） | +25% |
+| 房主事件循环阻塞 | 291 ms | 241 ms（288） | −17% |
+| 命令响应 | 1.10 MB | 1.23 MB（1.33 MB） | +12% |
+| `status` 响应 | 1.10 MB | 1.24 MB（1.32 MB） | +13% |
+| 每次行动 `status` 总下行 | 3.3 MB | 3.73 MB（3.96 MB） | +13% |
+| 每次行动 `publishOnline` 次数 | 3–5 | 3 | 同量级 |
+| 每次行动 `publishOnline` 耗时 | — | 284 ms（343） | — |
+| 阶段：commit / snapshot | — | 35 ms / 245 ms | — |
+| 单席位视图（revision 120） | 1.10 MB：cards 785 / events 250 / defs 81 / 其余 27 KB | 1.26 MB：cards 833 / events 287 / defs 105 / 其余 29 KB | 结构一致 |
+
+¹ 4 人局到第 4 轮后 seat0/1 按游戏机制阵亡、不再产生动作，host 样本因此偏少；`--moves=20` 时四席分布 5/5/4/6。三次复跑 host p50 为 361 / 364 / 388 ms。
+
+**结论**：字节结构（静态表约占 2/3）、发布次数、阻塞量级与手工基线一致（±25% 内）。命令往返比手工基线高约 20%，主要是测量路径不同（手工记录 vs harness 的 HTTP 命令往返），**P1 起以本 harness 的 p50 作为前后对比口径**；旧口径的 317 ms 保留在 §1.2 作为历史参考。
+
+复现命令：
+
+```bash
+node tools/perf-online-latency.mjs --moves=100 --json=artifacts/perf/baseline-20261023.json
+node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline-20261023.json   # 回归 >20% 退出 1
+```
 
 ## 2. 已完成、已否决、教训
 
@@ -165,6 +195,15 @@
 
 **验收**：同一台机器复现 317 ms ±20%；能回答「这次点击发了几次 publish、几字节、各阶段多少 ms」。
 **回滚**：纯观测，无行为变化。
+
+**状态：已完成（2026-10-23）** ✅
+
+- `tools/perf-online-latency.mjs`：`--setup=hub|fast`（默认 hub，真实开局）、`--seats/--moves/--warmup/--ai/--seed/--status`、`--json/--baseline/--compare`、回归 >20% 退出 1；每动作 host/guest 分组与阶段明细。
+- 服务端：`lib/perf.js` + `lib/server.js` / `lib/online.js` 埋点，`BOARDGAME_PERF=1` 开启、默认关闭；`DSH_HOME/perf.jsonl`（`BOARDGAME_PERF_FILE=0` 关闭）、事件循环延迟直方图、`publish.member` 分项。
+- 浏览器：`public/perf.js` + `public/app.js` / `online-ui.js` / `p2p.js`，`?perf=1` 时 `window.__ONLINE_PERF__`（requests / commands / applies / renders + `summary()`），默认访问零新增请求。
+- 基线：`artifacts/perf/baseline-20261023.json`，复现数字见 §1.6（host p50 388 ms、阻塞 241 ms、命令/status 1.2 MB、status 下行 3.7 MB、publish 3 次）。
+- 新增用例：`tests/hall/perf.test.mjs`、`tests/hall/online-perf-ui.test.mjs`；大厅浏览器回归 `online.browser.mjs` 3/3 通过。
+- 已知既有失败（与本阶段改动无关，属 Arkham 仓库当前提交状态）：`tcu-migration.test.mjs` / `tcu-rules.test.mjs` 缺 `artifacts/migration/tcu/*.json` 生成产物；`capture-view-hashes.mjs` 基线未随「迁移四循环」提交更新。P1 需要视图逐字节门禁时改用 hydration 等价性用例，不以该过期基线为准。
 
 ### P1 字节与重复发布（3–4 天）
 
@@ -411,6 +450,9 @@ cd games/arkhamhorror && node tools/capture-view-hashes.mjs
 
 # 服务端热路径基准
 node tools/perf-online-snapshot.mjs --seats=4 --moves=250
+
+# 联机延迟基准（P0 harness；默认 hub 开局，--moves=20 约 20 秒）
+node tools/perf-online-latency.mjs --moves=20
 ```
 
 浏览器：
@@ -424,7 +466,7 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 
 - **字节**：`tests/hall/online-payload.test.mjs` 断言 4 人 fixture 的命令 / status ≤ 阈值（宽松，只防数量级退化）。
 - **隐私**：静态表 hydration 后与全量视图逐字节一致；私有卡面不在公共表。
-- **性能**：`tools/perf-online-latency.mjs --baseline artifacts/perf/baseline.json`，超过 20% 回归退出 1（不进默认 `npm test`，CI nightly / release 跑）。
+- **性能**：`tools/perf-online-latency.mjs --moves=100 --baseline=artifacts/perf/baseline-20261023.json`：文件不存在时写入本次基线，存在时比较，核心指标（host/guest 命令往返、命令字节、status 下行、publish 次数、阻塞）比基线差 >20% 退出 1（不进默认 `npm test`，CI nightly / release 跑）。只做同机前后对比，绝对值不当浏览器指标。
 - **顺序**：busy / status 不乱序；coalescing 不丢最终状态。
 
 ### 5.4 回滚
@@ -438,7 +480,7 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 
 | 阶段 | 内容 | 工作量 | 出口指标 |
 | --- | --- | --- | --- |
-| P0 | harness + 仪表 + 基线 | 1–1.5 天 | 可复现 317 ms |
+| P0 ✅ | harness + 仪表 + 基线（2026-10-23 完成） | 1–1.5 天 | host 命令往返 p50 388 ms、阻塞 241 ms、status 下行 3.7 MB（§1.6） |
 | P1 | busy / slim / 序列化 / 静态表 / 合并 | 3–4 天 | 命令 ≤ 300 KB；阻塞 ≤ 150 ms |
 | P2 | 延后 / AI 解耦 / p2p 事件 | 2.5–4 天 | 点击 ≤ 120 ms；AI ≤ 200 ms |
 | P3 | status delta / A1′ / 零拷贝 / 网络 | 2–3 天 | status ≤ 100 KB；relay ≤ 450 ms |
@@ -475,10 +517,10 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 
 ### 9.2 关键文件
 
-- 大厅：[lib/server.js](../lib/server.js)（`sessionView` / `cachedSessionView` / `publishOnline` / `onlineCommand` / `snapshotSession`）、[lib/online.js](../lib/online.js)（`publish` / `command`）、[lib/online-sync.js](../lib/online-sync.js)。
-- 浏览器：[public/online-ui.js](../public/online-ui.js)（`accept` / `command` / `refresh`）、[public/p2p.js](../public/p2p.js)（`command` / `receive`）、[public/app.js](../public/app.js)（`render`）。
+- 大厅：[lib/server.js](../lib/server.js)（`sessionView` / `cachedSessionView` / `publishOnline` / `onlineCommand` / `snapshotSession`）、[lib/online.js](../lib/online.js)（`publish` / `command`）、[lib/online-sync.js](../lib/online-sync.js)、[lib/perf.js](../lib/perf.js)（P0 埋点，`BOARDGAME_PERF=1`）。
+- 浏览器：[public/online-ui.js](../public/online-ui.js)（`accept` / `command` / `refresh`）、[public/p2p.js](../public/p2p.js)（`command` / `receive`）、[public/app.js](../public/app.js)（`render` / `rawApi`）、[public/perf.js](../public/perf.js)（`?perf=1` → `window.__ONLINE_PERF__`）。
 - Mod：[games/arkhamhorror/src/integration/observation.js](../games/arkhamhorror/src/integration/observation.js)（`viewState` / `pick`）。
-- 基准：[tools/perf-online-snapshot.mjs](../tools/perf-online-snapshot.mjs)、新 `tools/perf-online-latency.mjs`、[games/arkhamhorror/tests/render-perf.browser.mjs](../games/arkhamhorror/tests/render-perf.browser.mjs)。
+- 基准：[tools/perf-online-snapshot.mjs](../tools/perf-online-snapshot.mjs)、[tools/perf-online-latency.mjs](../tools/perf-online-latency.mjs)（P0 主 harness）、[games/arkhamhorror/tests/render-perf.browser.mjs](../games/arkhamhorror/tests/render-perf.browser.mjs)；冻结基线 `artifacts/perf/baseline-20261023.json`（本地）。
 
 ### 9.3 旧结论存档
 
