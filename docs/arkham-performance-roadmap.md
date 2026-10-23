@@ -1,370 +1,485 @@
-# 诡镇联机性能路线图（#2 → 渲染 → #1）
+# 诡镇联机性能优化路线（2026-10 重写）
 
-本文件是接下来三项优化的执行计划，顺序固定为：
+> 状态：执行中，取代 2026-10-23 旧版路线图。
+> 范围：大厅 + 诡镇 Mod 的**联机热路径**；不含规则引擎优化、卡图加载、单机存档压缩。
+> 基线：2026-10-23 手工实测（4 真人、夜之狂热第一关、revision 100–123）。
 
-1. **#2 `viewState` 公私拆分**（带逐字节门禁 + 隐私断言）
-2. **前端渲染局部更新**（DOM morph）
-3. **#1 浏览器增量协议**（`/api/online/status` 走 delta）
+## 0. 摘要
 
-诊断数据与已完成的修复见 [`arkham-online-performance.md`](arkham-online-performance.md)；本文只写「接下来怎么改、怎么验收、怎么回滚」。
+一句话：**先删掉不该发的东西，再减少发的次数，最后才做客户端增量和渲染。**
 
-## 当前进度
+旧版把顺序排成「`viewState` 公私拆分 → DOM morph → 浏览器 status 增量」。实测后三条都没有按原计划继续：
 
-| 项 | 状态 | 结论 |
-|---|---|---|
-| A0 逐字节基线 | ✅ | 15 夹具 / 55 席位视图，确定性已验证；门禁命令 `node tools/capture-view-hashes.mjs` |
-| A3 隐私断言 | ✅ | 新增 5 条断言；顺带修掉「卡面自愈把别人手牌卡面补进本席位视图」的既有泄漏 |
-| A1 公共部分拆分 | ⏸ 重估 | 实测公共计算每项 ≤0.05 ms，拆分无收益；改为共享 clone/静态表（A1′，约省 15 ms/次发布） |
-| B 渲染优化 | ❌ 取消 | 实测整树重绘 p50 ≈4 ms（496 节点）；morph 原型无收益（差异被 `h()` 建树成本淹没），已回退 |
-| C 增量协议 | 未开始 | 前端解析/渲染都不是瓶颈，应改做「减少发布次数 / 回包解耦」 |
+- `viewState` 的公共辅助函数合计 < 0.3 ms，拆分无收益；真正贵的是每席位 `structuredClone(state)` 和 `pick` 深拷 `cards` / `investigatorDefs`。
+- DOM morph 在同一状态重绘下 p50 3.8 vs 3.9 ms，4x CPU 降速 16.2 vs 12.9 ms；整树构建占 75%，morph 省的是 25% 的挂载，还多付 diff 和监听器重绑。已回退。
+- 浏览器 status 增量单做只省 3–5 ms 解析，相对 300 ms 的发布/往返是小项。
 
-## 0. 为什么是这个顺序
+新路线按 **字节 → 发布次数 → 延迟语义 → 可选深度** 排序。P1/P2 是主线，P3 可选，P4 只在渲染仍是瓶颈时做。
 
-| 顺序 | 理由 |
-|---|---|
-| #2 先做 | 纯服务端、与前端解耦；收益立即可测（`publishOnline` 里的视图部分 45–90 ms，目标 ≤25 ms）；门禁是纯数据的（逐字节对比），最容易验证 |
-| 渲染第二 | 体感大头在「整树重建 + 卡图重建」；先降渲染成本，#1 的解析收益才看得出来，否则省下的几毫秒会被渲染淹没 |
-| #1 最后 | 协议改动风险最高（基线错位会显示旧状态），只有在 A/B 之后仍有明确收益才值得做；且它只改「本机大厅 ↔ 自己浏览器」，**不改中转协议**，不影响两人联机兼容性 |
+**目标（4 人局）**
 
-每个阶段自带开关与回滚点，任何一步测不出收益就停在那一步，不往下推。
+| 指标 | 现状 p50 | 目标 | 阶段 |
+| --- | --- | --- | --- |
+| 房主点击 → 桌面 | 330–420 ms | ≤ 200 ms（P1）/ ≤ 120 ms（P2） | P1 / P2 |
+| 客人直连点击 → 自己屏幕 | 450–600 ms | ≤ 300 ms | P2 |
+| 客人中转点击 → 自己屏幕 | 700–800 ms | ≤ 450 ms | P2 / P3 |
+| 带 AI 的行动确认 | 5–30 s | ≤ 200 ms | P2 |
+| 房主事件循环阻塞 | 291 ms | ≤ 150 ms（P1）/ ≤ 80 ms（P2） | P1 / P2 |
+| 单次命令响应 | 1.10 MB | ≤ 300 KB（房主）/ ≤ 1 KB（客人） | P1 |
+| 每次行动 status 总下行 | 3.3 MB | ≤ 1.1 MB（P1）/ ≤ 100 KB（P3） | P1 / P3 |
+| `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 60 ms | P1 / P3 |
+| 4 人命令往返 | 317 ms | ≤ 200 ms（P1）/ ≤ 120 ms（P2） | P1 / P2 |
 
-## 1. 阶段 A：#2 `viewState` 公私拆分
+## 1. 基线
 
-### A0 ✅ 逐字节基线（已完成）
-
-- 工具：[`games/arkhamhorror/tools/capture-view-hashes.mjs`](../games/arkhamhorror/tools/capture-view-hashes.mjs)
-  - `node tools/capture-view-hashes.mjs --write` 生成基线（`--write` 只在有意改变视图时用）；
-  - `node tools/capture-view-hashes.mjs` 校验，不一致退出码 1。
-- 基线：[`tests/fixtures/view-hashes.json`](../games/arkhamhorror/tests/fixtures/view-hashes.json)（`artifacts/` 被 .gitignore 忽略，所以放 tests/fixtures）。
-- 覆盖：15 个夹具 / 55 份席位视图——战役 hub、关卡开场、中局（40/80/120 步）、首次出现的每种待决选择（mulligan / turnOrder / playerWindow / commit / reaction / discard / agenda）、私人技能检定、1/2 席位对照。
-- 确定性已验证：同一份代码连续两次生成，文件哈希相同。
-- 门禁语义：`JSON.stringify` 对键顺序敏感，所以「哈希一致 = 视图逐字节一致」，重构只能改「值的来源」，不能改对象字面量的构造顺序。
-
-### A1 ⏸ 公共部分拆分：实测后重估（**收益不足，暂停**）
-
-在动 `viewState` 之前先量了它到底花在哪（4 席、`view-hash-baseline` 种子、第 80 / 250 步）：
-
-| 环节 | 第 80 步 | 第 250 步 |
-|---|---|---|
-| `viewState` 单席位（JIT 热） | 2.75 ms | 5.78 ms |
-| `viewState` × 4 席 | 11.3 ms | 25.4 ms |
-| `structuredClone(state)` 单次 | 1.87 ms | 3.5 ms |
-| `structuredClone(cards)` / `(investigatorDefs)` | 0.70 / 0.35 ms | 1.09 / 0.44 ms |
-| `campaignView` / `campaignStory` / `campaignProjection` / `abilityUsage` / `setAside` / `timeline` | 每项 ≤0.05 ms | 每项 ≤0.05 ms |
-| `legalMoves`（仅行动席位） | 0.43 ms | 0.43 ms |
-
-结论：**计划里的「公共计算很贵、抽出来共享」不成立**——所有公共辅助函数加起来不到 0.3 ms。
-真正的开销是「每个席位一次 `structuredClone(state)`」和「`pick` 里逐席位深拷 `cards` + `investigatorDefs`」，
-合计约 **15 ms / 次发布**（250 步、4 席），只占 `publishOnline` 的约 11%。
-
-因此调整 A1 的范围（A2 并入）：
-
-#### A1′（修订版）：共享「每 revision 只克隆一次」的数据
-
-1. 大厅侧：`sessionView` 每 revision 只 `structuredClone(state)` 一次，四个席位共用（[`lib/server.js:485`](../lib/server.js#L485)）；用 Mod 声明位 `viewStateSharesState: true` 控制，未声明的 Mod 保持逐席位克隆。
-2. Mod 侧：`viewState` 里 `pick` 对 `cards` / `investigatorDefs` 两个大表改「按引用」而不是 `structuredClone`（[observation.js:115](../games/arkhamhorror/src/integration/observation.js#L115)），并用同样的字段顺序构造，保证 A0 哈希不变。
-3. 前置（必须）：把卡面自愈改成**视图本地 copy-on-write**（见 A3 已完成的观察者过滤），不再写共享的 `state.cards`；否则 A 席位补进来的卡面会污染 B 席位。
-4. 预期：4 席视图部分 40 ms → ~25 ms；`publishOnline` 约 133 ms → ~118 ms。
-5. 门禁：A0 哈希 + `test:fast` + 四真人联机。
-
-> 若这一项的收益仍不值得，**直接跳到阶段 B**——它不影响任何用户可见的正确性，只是省 15 ms。
-
-### A3 ✅ 隐私断言（已完成，并修掉一个既有泄漏）
-
-- 新增 [`tests/view-privacy.test.mjs`](../games/arkhamhorror/tests/view-privacy.test.mjs)（已进 `FAST_TESTS` 与 `node-suite`），断言：
-  别人手牌/压牌为空、别人牌组不下发、非应答者 `pendingChoice.options` 为空、非行动席位 `legalMoves` 为空、私人检定与私人日志不外泄、`viewEvents` 过滤 `privateSeat` 并遮蔽演出快照里的手牌。
-- **实测发现一个既有泄漏**：`viewState` 的卡面自愈调用 `embeddedCardDefs(state, campaignId)` 时收集了**所有**席位的手牌/牌组/压牌，导致 A 席位触发自愈时，B 的手牌卡面被补进 A 的 `view.cards`（等于泄露「他有这张牌」；虽然只是卡面定义、不是手牌列表，协作游戏里影响有限）。
-- 修复：`embeddedCardDefs` 增加可选 `{ observerSeat }`（[card-defs.js:149](../games/arkhamhorror/src/engine/card-defs.js#L149)）——建局/存档快照不传参数仍取全量，观察投影传 `{ observerSeat }` 只取「公共可见 + 本人手牌/牌组」（[observation.js:203](../games/arkhamhorror/src/integration/observation.js#L203)）。
-- 验证：A0 逐字节哈希不变（夹具里没有触发自愈）；`test:fast` 2335/2335；大厅 113/113。
-
-### A4. 验收
-
-| 指标 | 目标 | 现状 |
-|---|---|---|
-| 逐字节哈希 | 100% 一致（含键顺序） | ✅ 15 夹具 / 55 席位视图，确定性已验证 |
-| 隐私断言 | 全部通过（含新增矩阵） | ✅ 5 条新断言 + 既有四真人 240 步断言 |
-| 回归 | `test:fast` + 大厅 113 例 + 四真人联机 7 例 | ✅ 2335/2335、113/113、7/7 |
-| `publishOnline`（4 席，250 步） | 做 A1′ 后：视图部分 40 → ~25 ms，总耗时 133 → ~118 ms；不做则维持现状 | ⏸ A1′ 待定 |
-
-**回滚**：A0/A3 不改变任何对外协议与存档格式（`embeddedCardDefs` 只在观察投影传参），出问题直接 revert；A1′ 的 `viewStateSharesState` 是逐 Mod 开关，可单独关掉。
-
-## 2. 阶段 B：前端渲染局部更新（DOM morph）——❌ 已取消（实测无收益）
-
-### B0 ✅ 测量工具与基线
-
-- 工具：[`tests/render-perf.browser.mjs`](../games/arkhamhorror/tests/render-perf.browser.mjs)（系统 Edge）+ [`public/app.js`](../public/app.js) 里 `?perf=1` 的埋点：
-  - `window.__HALL_BENCH_RENDER__(n)`：在同一局面上反复整树重绘并强制同步布局；
-  - 每次 `render()` 的耗时记录进 `window.__HALL_RENDER_MS__`（默认关闭）。
-- 场景：真实大厅 + 真实诡镇（`legacyAutoStart`，1 人），中途抽 14 张牌后约 **496 个 DOM 节点**。
-- 基线（连续 20 次）：
-
-| 工作负载 | p50 | p95 |
-|---|---|---|
-| A：同一状态整树重绘（含同步布局） | 4.0 ms | 5.0 ms |
-| B：真实小改动（开/关时间线，每次触发完整 render） | 2.6 ms | 4.8 ms |
-| C：把 CPU 降速 4 倍（模拟低端机器） | 13–36 ms | 33–52 ms（抖动大） |
-
-### B1–B3 原型结论：morph 不划算
-
-按计划实现了 `public/dom-morph.js`（同构补丁：属性/子节点/监听器差异，`h()` 记录监听器，`render()` 改为 morph），并用同一套基准做 A/B：
-
-| 工作负载 | 整树替换（原路径） | morph |
-|---|---|---|
-| A p50 / p95 | 3.9 / 4.6 ms | 3.8 / 5.1 ms |
-| 4 倍降速 p50 | 12.9 ms | 16.2 ms |
-
-**原因**：整树重绘的耗时主要花在「用 `h()` 把新树造出来」（约 3 ms / 496 节点），
-而不是「把新树挂上去并布局」（约 1 ms）。morph 省掉的是后者，却要额外走一遍差异比对，
-两者相抵，甚至略慢。真要再降，只能避免建树（子树缓存 / 虚拟 DOM），那是更大的重写，
-与收益不成比例。
-
-**决定**：回退 morph 相关改动（`dom-morph.js`、`h.bind`、`render()` 接入、`data-morph` 标记），
-只保留 `?perf=1` 埋点与 `render-perf.browser.mjs` 作为回归护栏（防止将来渲染性能数量级退化）。
-
-> 结论：**前端渲染不是卡顿来源**。同一份数据里，房主一次 `publishOnline` 约 130 ms、
-> 中转两段往返约 400 ms，比浏览器一次 4 ms 的重绘高两个数量级。
-
-### 下一步建议（按收益排序）
-
-1. **AI 回合与回包解耦**：客人的行动请求目前要等 `runAiTurns` 把整轮 AI 跑完才回包（十几秒），
-   期间界面一直「处理中」。这是体感「点了没反应」的直接来源，收益最大。
-2. **中转网络**：换区域/付费实例或自建中转（见 §0 的网络部分），把两段 RTT 从 ~400 ms 压下来。
-3. **减少发布次数**：一次行动会触发 3–17 次 `publishOnline`；可以在 AI 动作之间合并发布
-   （例如 150 ms 内的多次变更只推最后一次），把房主的阻塞时间按比例摊薄。
-
-### （原计划，保留备查）
-
-### B1. 让 `h()` 记录监听器
-
-- 在 [`public/app.js:76`](../public/app.js#L76) 增加 `LISTENERS` Symbol 与 `bind(el, type, fn)`；`h()` 的 `on*` 走 `bind`。
-- 把渲染树内 6 处手工 `addEventListener` 改为 `bind`：[catalog.js:119-120](../games/arkhamhorror/web/catalog.js#L119)（卡图 load/error 重试）、[game-ui.js:1156-1159](../games/arkhamhorror/web/game-ui.js#L1156)（仪表盘高亮）。其余 50 余处挂在 `document`/`window`/app root 上，走事件委托，不受影响。
-
-### B2. 新增 `public/dom-morph.js`
-
-规则（缺一不可）：
-
-1. `nodeType` 不同 → 替换；
-2. `namespaceURI`/`tagName` 不同 → 替换（地图是 `createElementNS` 生成的 SVG）；
-3. `data-key` 不同 → 替换；
-4. 属性集合按差异增删；`value`/`checked`/`disabled`/`src`/`open`/`hidden` 只在值不同时写，且 `document.activeElement` 的 `value` 不覆盖（保护 IME/光标）；
-5. 监听器整组替换（旧的全部 `removeEventListener`，新的绑定）；
-6. 子节点：有 `data-key` 走 Map 匹配，无 key 按位置匹配，多删少插。
-
-### B3. 接入 `render()`
-
-- [`public/app.js:344-346`](../public/app.js#L344)：`root.replaceChildren(next)` → `morph(root.firstElementChild, next)`，无旧节点时才 append。
-- 同时**移除 `patchAppWhileChatting`**（[app.js:290](../public/app.js#L290)）：morph 天然保住输入框与光标，两套逻辑共存会互相搬节点。
-- 给手牌/装备/地点/敌人/时间线加 `data-key`（卡实例 id / 地点 id / 敌人 id / event seq）。
-- 开关：`?morph=0` 强制走旧路径，出问题可让玩家临时关闭。
-
-### B4. 验收
-
-| 指标 | 目标 |
-|---|---|
-| `render()` P95 | 下降 ≥40%（以 B0 基线为准），无 long task 超过 100 ms |
-| 视觉回归 | 现有 50+ 浏览器用例全绿 + 关键界面截图对比（桌面 1440 / 移动 390） |
-| 交互回归 | 「点牌→状态变化→再点同一张」「输入中文不丢字」「滚动位置不跳」「演出不被重置」 |
-| 内存 | 连续 50 次更新后 DOM 节点数与监听器数不增长 |
-
-**风险与对策**：
-
-| 风险 | 对策 |
-|---|---|
-| 节点复用但监听器没重绑 → 点错卡 | B1 的 `bind` 强制覆盖；加「同一节点两次点击」回归 |
-| 依赖「重建节点」重播的 CSS 动画失效 | 搜索 `void .*offsetWidth` 类写法；改为显式重置 class |
-| morph 比重建更慢 | B0 先量；`?morph=0` 兜底 |
-| 演出层持有旧节点引用 | morph 让节点存活，反而更稳；对被替换的节点加 `isConnected` 判断 |
-
-**回滚**：`?morph=0` 即回到旧路径；默认值先在本地/内测打开，稳定后再默认开启。
-
-## 3. 阶段 C：#1 浏览器增量协议（⏸ 优先级下调）
-
-> 实测：浏览器每次收到约 500 KB 的会话 JSON，解析约 3–5 ms、渲染约 4 ms；
-> 增量协议能省掉解析的绝大部分，但相对房主 130 ms/次发布与 400 ms 网络往返是小项。
-> **建议先做上一节的「回包解耦」与网络，再回来评估是否还值得做 C。**
-
-### C1. 契约
-
-- `GET /api/online/status?wait=1&after=<serial>&stamp=<stamp>`，`stamp = <sessionId>:<revision>:<eventCount>`。
-- 响应三选一：
-  - `session` 全量（无 stamp、stamp 不匹配、基线被淘汰）；
-  - `sessionDelta = { baseStamp, changes }`（stamp 命中基线）；
-  - `sessionOmitted: true`（内容未变，只有 busy/room 变化）。
-- 服务端为每个大厅保留最近 2–3 份「已发视图」作为基线（`Map`，超出淘汰回落到全量）。
-
-### C2. 服务端
-
-- 在 [`lib/server.js:1358`](../lib/server.js#L1358) 的 status 分支上包一层 `withSessionDelta(status, stamp)`；复用 `snapshotChanges`（[`lib/online-sync.js`](../lib/online-sync.js)）。
-- 基线存的就是**发给浏览器的那个对象**（`status().session`），不要重新算一份。
-- `p2p.js` 的直连等待仍在轮询 `/online/status`（不带 `stamp`、走全量），保持不变——它只在直连命令后短时轮询，不是热路径。
-
-### C3. 客户端
-
-- 新增 `public/session-delta.js`（`applySnapshotChanges` 的浏览器副本，约 30 行）+ 一条「两份实现同 fixture 输出一致」的单测，防止漂移。
-- `online-ui.accept()`（[public/online-ui.js:37](../public/online-ui.js#L37)）：
-  - 校验 `baseStamp === stamp(state.session)`，不匹配 → 立刻用无 stamp 的请求重新拉全量；
-  - busy/聊天期间延后应用时，`appliedStamp` 必须跟着延后，不能拿「已收到」当「已应用」；
-  - 任何异常都退回全量，绝不把 delta 应用到错误基线上。
-
-### C4. 验收
-
-| 指标 | 目标 |
-|---|---|
-| 每次轮询的下行体积 | 从 450–700 KB 降到 ≤40 KB（全量兜底除外） |
-| 浏览器 JSON 解析耗时 | 下降 ≥80% |
-| 正确性 | 新增用例：基线过期、刷新页面、两个标签页、busy 延后、连续 50 次 delta 后与全量结果逐字节一致 |
-| 失败模式 | 任何异常都表现为「变慢（回全量）」，不允许出现「显示旧状态却可操作」 |
-
-**回滚**：客户端不发送 `stamp` 即完全走旧全量路径；服务端保留全量分支，无需版本升级。
-
-## 4. 测试矩阵
-
-```bash
-# 大厅（113 例）
-node --test tests/hall/*.test.mjs
-
-# 诡镇规则与集成（2335 例，含新增 view-privacy）
-cd games/arkhamhorror && node tools/run-tests.mjs fast
-
-# 观察视图逐字节门禁（阶段 A 护栏）
-cd games/arkhamhorror && node tools/capture-view-hashes.mjs
-
-# 四真人联机 + 隐私（7 例，约 2 分钟）
-node --test games/arkhamhorror/tests/hall-online.test.mjs
-
-# 浏览器回归（系统 Edge，channel: msedge）
-node node_modules/@playwright/test/cli.js test --config tests/hall/playwright.config.mjs
-node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playwright.config.mjs
-
-# 渲染回归与基准（输出 RENDER_BASELINE）
-node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playwright.config.mjs render-perf
-
-# 性能基准（#2 前后对比）
-node tools/perf-online-snapshot.mjs --seats=4 --moves=250
-```
-
-## 5. 里程碑与工作量（粗估）
-
-| 阶段 | 内容 | 工作量 | 状态 |
-|---|---|---|---|
-| A0 | 逐字节基线与采集脚本 | 0.5 天 | ✅ 完成 |
-| A1′ | 共享 state 副本 + 静态展示表（原「公共部分拆分」实测收益不足，已改范围） | 0.5–1 天 | ⏸ 待定（收益仅 ~15 ms/次发布） |
-| A3 | 隐私断言矩阵 + 卡面泄漏修复 | 0.5 天 | ✅ 完成 |
-| B0 | 渲染埋点与基线测量 | 0.5 天 | ✅ 完成（p50 ≈4 ms） |
-| B1–B4 | morph + 接入 + 回归 | 1.5–2 天 | ❌ 取消（原型实测无收益，已回退） |
-| C1–C3 | delta 协议 + 客户端兜底 | 2–3 天 | 依赖 A、B |
-| C4 | 异常用例与压测 | 0.5–1 天 | 依赖 C1–C3 |
-
-## 6. 上线检查清单
-
-- [ ] 每阶段独立提交，提交信息写清门禁结果（哈希一致 / 用例数 / P95）。
-- [ ] 诡镇改动在 `games/arkhamhorror` 这个独立仓库里提交并推送；大厅不跟踪它，不需要 bump 指针。
-- [ ] 版本号：A 完成后升 `boardgame-mod.json` 的 `version`（视图实现变了，联机两端应同版本）；C 只影响本机 HTTP，不需要升大厅版本。
-- [ ] 不使用任何持久化格式变更（三个阶段的视图都是运行期数据，不落盘）。
-- [ ] 每阶段结束更新 [`arkham-online-performance.md`](arkham-online-performance.md) 的实测表。
-
-## 7. 未决问题
-
-1. `campaignView` / `campaignStory` / `scriptActionHints` / `locationShroudModifier` 是否真的与席位相关——需要 A1 逐条确认；宁可先按私有处理。
-2. 共享 state 副本后，Mod 的 `viewState` 是否保证不写权威字段？目前只观察到 `state.cards` 自愈，需要加一条「视图期间权威 state 哈希不变」的断言兜底。
-3. 渲染层还有一处「表格演出」持有 DOM 引用（`table-presentation` 的 anchors），morph 后要确认动画中节点被替换时的降级路径。
-4. #1 的收益只有在 B 落地后测才有意义；若 B 之后浏览器每次渲染已 <15 ms，可考虑直接砍掉 C。
-
-## 8. 4 人局延迟预算（2026-10-23 实测）
-
-### 8.1 测量条件
+### 1.1 测量条件
 
 - 4 个真人席位、无 AI、夜之狂热第一关，revision 100–123。
 - 4 个大厅 + 本机 relay 跑在同一个 Node 进程里；客人的命令仍走 `客人 → relay → 房主` 的真实代码路径，只是 RTT 是本机。
-- 因此下面的「命令往返」接近房主进程的真实同步开销；线上还要再叠加一/两段公网 RTT。relay 与房主同进程会让房主事件循环阻塞略偏高，量级不受影响。
+- 线上还要再叠加 1–2 段公网 RTT；relay 与房主同进程会让房主事件循环阻塞略偏高，量级不受影响。
+- 数字来自 2026-10-23 的手工测量记录（本节保留原始口径）；P0 会用新 harness 复现并冻结成基线文件。
 
-### 8.2 当前实测
+### 1.2 延迟
 
 | 指标 | p50 | p95 |
-|---|---|---|
-| 房主行动命令往返 | **317 ms** | 399 ms |
-| 客人行动命令往返（localhost relay） | **346 ms** | 425 ms |
-| 房主事件循环阻塞 | **291 ms** | 331 ms |
+| --- | --- | --- |
+| 房主行动命令往返 | 317 ms | 399 ms |
+| 客人行动命令往返（localhost relay） | 346 ms | 425 ms |
+| 房主事件循环阻塞 | 291 ms | 331 ms |
 | 命令响应 | 1.10 MB | 1.30 MB |
 | `status` 响应 | 1.10 MB | 1.30 MB |
 | 每次行动 serial 变化 | 2 次 | 2 次 |
 
-单份席位视图（revision 100）的体积构成：
+### 1.3 单份席位视图构成（revision 100）
 
 | 字段 | 大小 | 占比 |
-|---|---|---|
+| --- | --- | --- |
 | `state.cards` | **785 KB** | 69% |
 | `events` | 250 KB | 22% |
 | `state.investigatorDefs` | 81 KB | 7% |
 | 其余（investigators / campaign / log / …） | ~27 KB | 2% |
 
-一次房主行动在浏览器侧实际拉取：
+**76% 的字节是静态表**（`cards` + `investigatorDefs`），每次点击却要传四份。
 
-| 项 | 当前 |
-|---|---|
+### 1.4 每次行动实际拉取
+
+| 项 | 体积 |
+| --- | --- |
 | 命令响应 | 1.1 MB |
 | 2 次 `serial` 对应的长轮询 | 2.2 MB |
 | `onlineUi.command` 末尾的显式 `refresh()` | 1.1 MB |
-| **合计** | **≈4.4 MB / 次点击** |
+| **合计** | **≈ 4.4 MB / 次点击** |
 
-两次 `serial` 的来源：一次是 revision 变化后的发布，一次是 `finally` 里 `busy` 从 true 变 false 又发布了一遍；第二次只为改一个布尔值，却仍要 deep copy + 两次 `JSON.stringify(full)`。
+> 上表是房主浏览器口径；`status` 总下行不含命令响应，命令响应另计 1.1 MB。
 
-端到端推算（含浏览器解析、渲染与真实网络）：
+### 1.5 服务端热路径
 
-| 场景 | 当前延迟 |
-|---|---|
-| 房主点击 → 桌面更新 | **330–420 ms** |
-| 客人直连点击 → 自己屏幕 | **450–600 ms** |
-| 客人经中转点击 → 自己屏幕 | **700–800 ms** |
-| 客人点击 → 房主屏幕 | 350–500 ms |
-| 带 AI 队友时的行动确认 | **+5–30 s**（等待整轮 AI，未计入上表） |
+- 一次行动可见 3–5 次 `publishOnline`（提交后、AI 后、`finally`、房间广播；上一版记录 3–17 次，P0 会以 harness 实测为准）。
+- `sessionView`：`structuredClone(state)` + `pick` 逐字段 `structuredClone`（含 `cards` / `investigatorDefs`）+ 事件历史 clone + Mod 投影。
+- `online.publish`：每席位 JSON 深拷贝 + diff + 2–3 次 `JSON.stringify` + 指标 stringify。
+- 存档：`snapshotSession` 后异步写，不阻塞事件循环（已修）。
 
-### 8.3 剩余可改进项与预估收益
+## 2. 已完成、已否决、教训
 
-| # | 改进 | 现状成本 | 预估改后 | 预计降幅 | 风险 |
-|---|---|---|---|---|---|
-| 1 | **静态表只发一次**：`cards` / `investigatorDefs` 按 `resourceVersion` 或 cards stamp 缓存，后续视图只带 stamp | 每份视图 866 KB；4 席克隆 + 每客人序列化 | 每次行动 1.1 MB → ~0.29 MB；发布 CPU −20–40 ms | 房主 −20–40 ms；中转客人 −80–200 ms | 中（客户端缓存/回退全量） |
-| 2 | **busy 单独轻量消息**：`busy` 变化不再发整份快照 | 第二次全量发布 40–70 ms + 额外 1.1 MB status | 一条小消息/仅 status 字段 | 每次行动 −40–70 ms | 低 |
-| 3 | **非行动者视图延后**：只构建行动者个人视图并回包，其余席位 `setImmediate` 后台发 | 回包前构建 4 席（60–80 ms）+ 3 份编码 | 回包只等 1 席（20–30 ms）；其余稍后到 | 服务端阻塞 −50–70%，房主点击 −55–65% | 中（顺序/flush） |
-| 4 | **命令响应瘦身 + 去掉命令后的 refresh**：房主只回自己的视图，客人只回 `sessionId`/`revision`/`eventCount`；`onlineUi.command` 末尾不再无条件 `refresh()` | 命令响应 1.1 MB + 额外 1.1 MB refresh | 房主 ~0.3 MB、客人 <1 KB，且少一次全量往返 | 房主 −5–15 ms；中转客人 −20–100 ms | 低 |
-| 5 | **status 增量/省略**（路线图 C） | 2 次 ×1.1 MB + refresh | ≤40 KB/次 | 本机解析 −10–20 ms；带宽 −95% | 中（基线错位） |
-| 6 | **publish 序列化清理**：去掉防御性 deep copy；`full` 只 stringify 一次；metrics 不在生产 stringify | 每客人 15–25 ms | 每客人 5–10 ms | 每次发布 −20–40 ms | 低 |
-| 7 | **A1′ 共享 clone/静态表** | 4 席视图 80 ms | ~65–70 ms | −15 ms/次发布 | 低–中 |
-| 8 | **直连命令事件化**：`p2p.command` 不再 100 ms 轮询等本地 revision | 0–100 ms 量化等待 | 0 ms | 直连客人 −50 ms（均值） | 低 |
-| 9 | **直连转发零拷贝**：房主浏览器不 parse→stringify，服务端切好 12 KB 片 | 每客人每快照 5–15 ms 主线程 | 接近纯转发 | 房主 CPU −5–15 ms/客人 | 中 |
-| 10 | **AI 回合与回包解耦**：先回 move，再后台跑 reactions/AI 并推增量 | 5–30 s | 100–200 ms 确认 | 确认延迟 −90%+；下一回合仍受模型耗时限制 | 高（busy/并发语义） |
-| 11 | **网络**：中转换区域/付费/自建 + TURN 提高直连率 | 两段 RTT ~400 ms | 100–150 ms | 中转客人 −250–300 ms | 非代码 |
+### 2.1 已完成（保留，不要回退）
 
-> 不建议再投入：DOM morph（整树重绘 p50 ≈4 ms，实测无收益）；`viewState` 公共/私有拆分（公共辅助函数合计 <0.3 ms，A1′ 已覆盖主要收益）；只做 delta 协议（解析省 3–5 ms，相对 300 ms 的同步发布是小项）。
+- `trimEventVisuals`：事件里的整桌演出快照只保留最近 24 条；250 步事件日志 8.27 MB → 0.42 MB。
+- 视图按 revision 缓存（`cachedSessionView`）；`publishOnline` 跳过离线成员、内容未变跳过。
+- 中转 room 广播按签名去重；`commitMove` 只序列化本次新内容；存档异步原子写。
+- 静态资源摘要缓存 + 媒体长缓存；卡图失败负缓存。
+- 服务端快照 delta（`snapshotChanges`）：35–116 KB vs 694 KB 全量。
 
-### 8.4 累计预估
+### 2.2 已否决
 
-| 阶段 | 房主点击 | 客人直连 | 客人中转 | 带 AI 的行动确认 |
-|---|---|---|---|---|
-| 当前 | 330–420 ms | 450–600 ms | 700–800 ms | 5–30 s |
-| P0：1+2+3+4+6 | **100–160 ms** | **180–320 ms** | **400–550 ms** | 5–30 s |
-| P1：+5+7+8+9 | 90–140 ms | 160–280 ms | 380–520 ms | 5–30 s |
-| P2：+11 网络 | 90–140 ms | 120–220 ms | **250–350 ms** | 5–30 s |
-| +10 AI 解耦 | 90–140 ms | 120–220 ms | 250–350 ms | **100–200 ms** |
+| 尝试 | 实测 | 决定 |
+| --- | --- | --- |
+| DOM morph（旧阶段 B） | p50 3.8 vs 3.9 ms；p95 5.1 vs 4.6 ms；4x 16.2 vs 12.9 ms | 回退，不再做通用 morph |
+| `viewState` 公私拆分（旧 A1） | 公共辅助每项 ≤ 0.05 ms，合计 < 0.3 ms | 暂停；改做 A1′ 共享 clone |
+| 浏览器 status 增量单做（旧 C） | 解析 3–5 ms，渲染 4 ms | 降到 P3，先做 P1 / P2 |
 
-口径：房主点击到桌面更新；客人点击到自己屏幕；带 AI 的「确认」指自己的行动被服务端接受并显示，不包含 AI 实际思考时间。
+#### 为什么不再做通用 DOM morph
 
-### 8.5 建议顺序与验收
+- 整树重绘的耗时约 3 ms 花在「用 `h()` 把新树造出来」，约 1 ms 花在「挂上去并布局」；morph 仍然要造完整棵树，只省后者。
+- 同状态（近零差异）基准下 morph 只打平，说明 diff 的成本 ≈ 挂载的成本；真实变化还要再加 patch，必然更慢。
+- 4x CPU 降速下基线 3.9→12.9（3.3x），morph 3.8→16.2（4.3x），多出来的部分就是被放大的纯 JS diff。
+- `h()` 每次 render 都创建新的监听器闭包，morph 无法判断等价，只能整组重绑；事件委托已经覆盖大部分交互，保节点收益很小。
+- 496 个节点太小，diff 的固定成本摊不薄；牌桌主体还是 Mod 返回的真实 DOM，大厅无法安全地深入 diff。
 
-1. 先做 **1 静态表** 与 **2 busy 轻量消息**：改动集中、收益确定，直接砍掉每次点击的大部分字节与一次全量发布。
-2. 再做 **3 非行动者延后** 与 **4 命令响应瘦身（含去掉命令后的 `refresh()`）**：把房主同步阻塞从 ~300 ms 压到 ~80–120 ms。
-3. 然后 **5 status 增量**、**6 序列化清理**、**7 A1′**、**8 p2p 事件化**。
-4. 有 AI 席位时，**10 AI 解耦** 的体感收益最大；网络（11）取决于部署，和代码解耦。
+> 如果将来要做虚拟 DOM，必须先让 `h()` 返回 vnode，并给 Mod UI 提供组件/区域契约；那是平台级重写，单独立项，不放进本路线。
 
-验收目标：
+### 2.3 教训
 
-| 指标 | 目标 |
-|---|---|
-| `perf-online-snapshot --seats=4 --moves=250` 的 `publishOnline` | 123 ms → **≤60 ms** |
-| 4 人局命令往返 p50 | 317 ms → **≤120 ms** |
-| 4 人局房主事件循环阻塞 p50 | 291 ms → **≤80 ms** |
-| 单次命令响应 | 1.1 MB → **≤300 KB** |
-| 每次行动的 status 总下行 | 3.3 MB → **≤100 KB** |
-| 房主点击 → 桌面 | **≤150 ms** |
-| 客人直连点击 → 自己屏幕 | **≤300 ms** |
-| 客人中转点击 → 自己屏幕 | **≤450 ms** |
+1. **先量阶段，再谈优化**：4 ms 的渲染只占 300–400 ms 点击的 1%。
+2. **先删工作，再做增量**：morph 在全量构建之后打补丁，等于建两遍。
+3. **一次行动只应有一次全量下发**：重复 publish / 重复 refresh 是最大浪费。
+4. **优化 75%，不是 25%**：省 1 ms 的挂载不会改变体感。
+5. **协议改动必须带字节和隐私门禁**：视图可以裁剪，但不能改变「谁能看到什么」。
+
+## 3. 目标、原则与约束
+
+### 3.1 目标
+
+以「点击到屏幕」为准，不以单函数微秒数为准：
+
+- P1 结束：房主点击 ≤ 200 ms，阻塞 ≤ 150 ms，命令 ≤ 300 KB，status 总计 ≤ 1.1 MB。
+- P2 结束：房主点击 ≤ 120 ms，直连客人 ≤ 300 ms，AI 确认 ≤ 200 ms，阻塞 ≤ 80 ms。
+- P3 结束：中转客人 ≤ 450 ms，status ≤ 100 KB，`publishOnline` ≤ 60 ms。
+- P4（条件）：render p95 ≤ 8 ms，或渲染占点击 < 10%。
+
+### 3.2 原则
+
+1. **端到端优先**：每次改动都要能回答「哪个指标、降多少、怎么测」。
+2. **先减字节，再减次数，最后才做增量/渲染**。
+3. **一次行动最多 1 次命令响应 + 1 次最终快照 + 1 次 status**；禁止命令后再无条件 `refresh()`。
+4. **线协议只增可选字段**：旧客户端、旧中转不崩；静态表/增量缓存必须能回退全量。
+5. **每个优化独立开关**（env / capability），可单独回滚。
+6. **隐私、重连、存档兼容是硬约束**：`view-privacy`、4 人 240 步、房主重启必须全绿。
+7. **不改 relay 协议**；房主↔浏览器与房主↔客人分开改。
+8. **存档永远写全量**；省略只发生在 wire。
+
+### 3.3 硬约束
+
+- 私有信息（别人的手牌、牌库顺序、私聊、未触发剧情）不得进入公共静态表或其他席位视图。
+- 任何 wire 变化都要有「全量回退」路径；缓存错位只能表现为「变慢」，不能表现为「显示旧状态却可操作」。
+- 联机两端版本不一致时仍然拒绝加入；本次路线不改变版本握手语义。
+- 存档格式不变；静态表和增量只存在于运行期。
+
+## 4. 路线
+
+### P0 基线与仪表（1–1.5 天）
+
+**目标**：把「感觉慢」变成可复现的分阶段数字。
+
+- 新增 `tools/perf-online-latency.mjs`：
+  - 用 `createServer` 起 4 个大厅（不同端口 / `DSH_HOME`）+ 本机 relay；
+  - 建房、加入、准备、开局，按脚本推进 N 步（默认 100），可配 `--ai=0|2`；
+  - 记录：命令往返、房主事件循环阻塞、命令响应字节、status 字节、每次行动的 `publishOnline` 次数、serial 变化次数；
+  - 输出 JSON + 表格，支持 `--baseline <file>` / `--compare <file>`。
+- 大厅加 `BOARDGAME_PERF=1`：
+  - `snapshotSession`：view build / publish / save 分阶段；
+  - `publishOnline`：视图缓存命中、每席位 deep copy / diff / encode、成员数；
+  - `onlineCommand`：commit / reactions / AI / publish / save；
+  - 写入 `DSH_HOME/perf.jsonl`，默认关闭。
+- 浏览器：复用 `?perf=1`，补 `window.__ONLINE_PERF__`（status / command 字节、render 次数、apply 耗时）。
+- 基线文件：`artifacts/perf/baseline-20261023.json`（本地，不入发布包）。
+
+**验收**：同一台机器复现 317 ms ±20%；能回答「这次点击发了几次 publish、几字节、各阶段多少 ms」。
+**回滚**：纯观测，无行为变化。
+
+### P1 字节与重复发布（3–4 天）
+
+> 目标：单次命令 ≤ 300 KB，每次行动 status 总下行 ≤ 1.1 MB，房主阻塞 ≤ 150 ms。
+> 这一阶段不改延迟语义（仍然等 AI），只砍数据面。
+
+#### P1.1 busy 轻量消息（0.5 天）
+
+**现状**：`busy` 变化会触发整份 snapshot；`finally` 里 `publishOnline` 再发一次全量。
+
+**改动**：
+- `lib/online.js` 增加 `publishStatus(member, { busy, lobby, revision, snapshotId })`。
+- 不为 relay 新增消息类型：复用现有 `snapshot` 信封，payload 加 `kind: 'status'`，relay 原样转发即可。
+- 客户端 `online-ui.accept` 只更新 `state.online.busy/lobby`，不替换 session。
+- 用 `snapshotId` / `revision` 防止旧 status 覆盖新快照；最终快照携带 `busy: false`。
+- status 不进入 `sentSnapshots` 的 delta 基线，否则下一次全量/增量会以错误 base 计算。
+- `publishOnline` 的 `finally` 只在内容真的变化时才发全量；busy 单独走 status。
+
+**预期**：每次行动 −40–70 ms，少一次全量发布。
+
+**风险**：status 先于最终快照到达，导致按钮提前可用。客户端必须等 `revision` / `snapshotId` 匹配。
+
+**验收**：4 人 240 步 busy 切换正确；断线重连后 busy 一致。
+
+#### P1.2 命令响应瘦身 + 去掉命令后的 refresh（1 天）
+
+**现状**：`onlineCommand` 返回完整 `cachedSessionView`；`online-ui.command` 之后 `refresh()`；`run()` 再 `refresh()` 一次。
+
+**改动**：
+- 房主：仍返回自己的视图（本地渲染需要）。
+- 客人：只返回 `{ ok, sessionId, revision, eventCount, busy }`；状态由随后的 snapshot / 长轮询送达。
+- 客人侧 `app.js` / Mod UI（`game-ui.js`、`hub.js`）不能假设 `r.session` 一定存在：`session` 改为可选，snapshot 到达后再替换；乐观落子保留到 snapshot 覆盖。
+- `online-ui.command`：move / chat 成功后不再 `refresh()`；只有 `start` / `reset` / `leave` 等无 session 返回的动作才刷新。
+- `run()` 不再对 command 包一层 refresh；错误路径保留一次 `GET /status` 兜底。
+- 直连 `p2p.command` 同样只等 snapshot，不额外拉全量。
+
+**预期**：每次行动 −1.1 MB；客人 −20–100 ms。
+
+**风险**：客人响应先到、snapshot 后到，UI 会短暂看到旧状态。用 `busy` / `revision` 占位，不把旧状态当可操作。
+
+**验收**：客人点击后 300 ms 内看到自己的行动；4 人测试；无重复 refresh；全仓 `r.session` 调用点审计，客人路径下 `session` 缺失不抛错。
+
+#### P1.3 序列化清理（0.5 天）
+
+**现状**：`online.publish` 每席位 `JSON.parse(JSON.stringify(...))`、`JSON.stringify(delta)` / `JSON.stringify(full)`、metrics 再 stringify。
+
+**改动**：
+- `sessionView` 每 revision 产生新对象，`publish` 不再防御性深拷贝（加注释与测试保证不突变）。
+- `fullJson = JSON.stringify(full)` 只算一次；delta 也用字符串长度比较。
+- `sendRaw` 直接发字符串，避免 socket 层二次 stringify。
+- metrics 字节只在 `BOARDGAME_PERF=1` 时计算。
+
+**预期**：每客人 15–25 ms → 5–10 ms。
+
+**风险**：共享视图被下游修改；开发环境加 `Object.freeze` 或测试断言，生产保留注释。
+
+**验收**：`online-sync.test.mjs` + 4 人测试；profile 无回退。
+
+#### P1.4 静态表只发一次（1–1.5 天）
+
+**现状**：`viewState` 的 `pick` 每席位 `structuredClone(cards)` + `structuredClone(investigatorDefs)`；每份视图 866 KB。
+
+**设计**：
+- 会话级 `staticVersion`（`mod.id + mod.version + hash(publicCards + investigatorDefs)`，开局 / 读档算一次）。
+- 首次视图带 `static: { version, cards, investigatorDefs }`；客户端按 `sessionId` 缓存。
+- 后续视图带 `staticVersion`，不带两表；客户端 `hydrate(session)` 后再渲染。
+- 请求带 `clientStatic=<version>`（status / command 查询参数），命中才省略；未命中回全量。
+- host 与 guest 都按「浏览器缓存 + hall 缓存」两层处理：host 依据本地浏览器的 `clientStatic` 决定是否省略；guest hall 在 `receiveSnapshot` 时保留 `static`，浏览器刷新后由 guest hall 补发，不要求重新向 host 要全量。
+- **公共静态表只能是公共卡面**：自愈补进来的本人手牌定义走 `privateCards` 小补丁，不得把某个席位的视图表当公共表缓存。
+- `includeStatic=false` 时，自愈判断不能依赖空的 `view.cards`：由大厅传入已知公共卡号集合（或会话级公共表索引），只补公共表里没有、且观察者可见的定义。
+- 新增的公共卡面走 `cardsPatch`；静态表版本变化时允许一次全量重发。
+- 存档仍写全量。
+
+**Mod 改动**：`viewState(state, seat, { includeStatic })`；`includeStatic=false` 时跳过两表，并把自愈结果放进 `privateCards`。
+
+**预期**：1.1 MB → ~300 KB；publish CPU −20–40 ms；客人 −80–200 ms。
+
+**风险**：客户端 hydration 漏字段导致牌桌空白；私有卡面混入公共表造成泄漏；刷新后缓存丢失需回全量。
+
+**验收**：
+- 新单测「hydrated view 与全量 view 逐字节一致」；
+- `view-privacy` 全绿，新增「公共表不含私有卡面」断言；
+- 刷新 / 换局 / 版本变化回全量；
+- 4 人 240 步。
+
+#### P1.5 发布合并（1 天）
+
+**现状**：一次行动 3–5 次 `publishOnline`，其中多次内容相同或只差 busy。
+
+**改动**：
+- `schedulePublish()`：标脏后在 `setImmediate` / 微任务合并，窗口内只发最后一次；命令响应前 `flushPublish()`。
+- AI 连续动作在短窗口内合并；事件已累积，客户端按 `seq` 回放；最终状态必须 flush。
+- `finally` 的 busy 走 P1.1 的 status，不再触发全量。
+
+**预期**：publish 次数 3–5 → 1–2；房主 −40–120 ms。
+
+**风险**：跳过中间快照导致演出不连贯；用事件序列回放，加浏览器用例确认 AI 动作可见。
+
+**验收**：4 人 240 步；AI 2 人局动作不丢；`publishOnline` 计数断言。
+
+#### P1 出口
+
+- 命令响应 ≤ 300 KB；每次行动 status 总下行 ≤ 1.1 MB；房主阻塞 ≤ 150 ms；4 人命令往返 ≤ 200 ms。
+- `test:hall`、`test:fast`、4 人联机、`view-privacy`、浏览器回归全绿。
+- 视图哈希（hydration 后）不变；静态表相关的 wire 变化有独立 fixture。
+
+### P2 延后与解耦（2.5–4 天）
+
+> 目标：房主点击 ≤ 120 ms，带 AI 确认 ≤ 200 ms，直连客人 ≤ 300 ms。
+> 这一阶段改时序 / 并发语义，风险高于 P1。
+
+#### P2.1 非行动者视图延后（1 天）
+
+**现状**：`onlineCommand` 返回前 `publishOnline` 为所有席位建视图；4 席约 60–80 ms。
+
+**改动**：
+- 先构建行动者视图并随响应返回；
+- 其他在线席位 `setImmediate` 后台构建 / 发布，同一 revision 合并；
+- 行动者的 `onlinePublishedViews` 标记已发，避免重复；
+- busy=false 随最终快照 / status 发送。
+
+**预期**：房主同步阻塞 −50–70%，点击 −55–65%。
+
+**风险**：其他玩家短暂落后；下一动作在其他人收到前开始（busy 锁仍阻止）；测试顺序。
+
+**验收**：4 人点击后各自 ≤ 2 帧内更新；无 stale revision 提交。
+
+#### P2.2 AI 回合与回包解耦（1.5–2 天）
+
+**现状**：`onlineCommand` `await runAiTurns`，客人等 5–30 s。
+
+**改动**：
+- 提交人类动作后立即返回 `{ revision, eventCount, aiPending: true }`（房主可带自己的视图）；
+- `busy` 保持 true；后台 `runAiTurns`，每步 / 最终 `publishOnline`；
+- AI 失败 / 超时通过 `session.events` 的 `agentError` + status 暴露，不再只靠 HTTP 错误；
+- `start` / `reset` 同样先返回，再后台跑先手 AI；
+- 客户端显示「AI 思考中」，允许聊天，不允许下一步行动；
+- 服务器重启后按存档恢复并继续。
+
+**预期**：AI 确认 5–30 s → 100–200 ms；体感最大收益。
+
+**风险**：错误传播、并发 / 重入、客户端 `working` 状态、重连时 AI 仍在跑。
+
+**验收**：
+- 假模型延迟 3 s，点击 200 ms 内确认；
+- AI 完成后状态一致；
+- AI 失败可见；
+- 双击不重复跑；
+- 重启恢复。
+
+#### P2.3 直连命令事件化（0.5–1 天）
+
+**现状**：`p2p.command` 收到 result 后每 100 ms 轮询 `/online/status`，等本地 revision。
+
+**改动**：
+- `directSnapshot` 返回的 status 直接用于解析等待者；
+- `waitForRevision(revision)` Promise，由 `directSnapshot` / `receiveSnapshot` 触发；
+- 若 snapshot 先于 result 到达，立即 resolve；
+- 去掉 100 ms 轮询。
+
+**预期**：直连客人 −0–100 ms（均值约 50 ms）。
+
+**风险**：直连与中转切换时 Promise 悬挂；超时回退一次 status。
+
+**验收**：直连 / 中转切换；4 人测试；无轮询请求。
+
+#### P2 出口
+
+- 房主点击 ≤ 120 ms；直连客人 ≤ 300 ms；AI 确认 ≤ 200 ms；房主阻塞 ≤ 80 ms。
+- 4 人 240 步、AI 2 人、断线重连、房主重启全绿。
+
+### P3 深度优化（2–3 天，可选）
+
+> 只有 P1 / P2 后仍不达标才做；每项独立评估。
+
+#### P3.1 浏览器 status 增量（1–1.5 天）
+
+- `stamp = sessionId:revision:eventCount[:staticVersion]`；服务端保留最近 2–3 份已发视图。
+- 响应三选一：全量 / `sessionDelta` / `sessionOmitted`。
+- 客户端严格校验 `baseStamp`，异常回全量。
+- 预期 status ≤ 40 KB，解析 −80%。
+- 风险：基线错位显示旧状态；失败模式必须是「变慢不变错」。
+
+#### P3.2 A1′ 共享 state clone（0.5–1 天）
+
+- `viewStateSharesState` 逐 Mod 开关；每 revision 只 `structuredClone(state)` 一次，四席共用。
+- `cards` 自愈改 copy-on-write；加「视图期间权威 state 哈希不变」断言。
+- 预期 −15 ms / publish。
+- 风险：Mod 写共享 state；默认关闭，Arkham 先开。
+
+#### P3.3 直连转发零拷贝（1 天）
+
+- 房主浏览器不再 `JSON.parse` / `stringify` 每个 snapshot；服务端切 12 KB 片或浏览器按字符串切片。
+- 预期 −5–15 ms / 客人。
+- 风险：校验 / 分片边界；保留解析兜底。
+
+#### P3.4 网络（非代码）
+
+- Render 付费 / 换区域、自建 relay、TURN 提高直连率。
+- 预期中转客人 −250–300 ms。
+- 验收：真实跨网一次建房 / 加入 / 落子。
+
+### P4 渲染（条件触发，2–3 天）
+
+> 只有 P1–P3 后 render p95 > 8 ms 或占点击 > 10% 才做。**不做通用 DOM morph。**
+
+- 区域级更新：手牌 / 时间线 / 动作栏 / 日志各自按 key 更新，不整页 diff。
+- 静态子树缓存：地点地图、卡表、规则书面板，按 revision / 输入复用。
+- 渲染合并：一次网络批次只 render 一次；`run()` / `finally` 不重复 render。
+- 事件委托 + `data-action`，动态区域不建闭包监听器。
+- 验收：render p95 ≤ 8 ms；50+ 浏览器用例；输入 / 滚动 / 动画不回归。
+- 如果做虚拟 DOM：`h()` 必须返回 vnode，且 Mod UI 提供组件 / 区域契约——平台级重写，单独立项。
+
+## 5. 验收与门禁
+
+### 5.1 指标表
+
+| 指标 | 现状 | P1 出口 | P2 出口 | P3 出口 |
+| --- | --- | --- | --- | --- |
+| 房主点击 → 桌面 | 330–420 ms | ≤ 200 ms | ≤ 120 ms | — |
+| 直连客人点击 → 屏幕 | 450–600 ms | ≤ 400 ms | ≤ 300 ms | — |
+| 中转客人点击 → 屏幕 | 700–800 ms | ≤ 600 ms | ≤ 500 ms | ≤ 450 ms |
+| AI 行动确认 | 5–30 s | 5–30 s | ≤ 200 ms | — |
+| 房主事件循环阻塞 | 291 ms | ≤ 150 ms | ≤ 80 ms | — |
+| 单次命令响应 | 1.10 MB | ≤ 300 KB | ≤ 300 KB | — |
+| 每次行动 status 总下行 | 3.3 MB | ≤ 1.1 MB | ≤ 1.1 MB | ≤ 100 KB |
+| `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 90 ms | ≤ 70 ms | ≤ 60 ms |
+| 4 人命令往返 | 317 ms | ≤ 200 ms | ≤ 120 ms | — |
+
+### 5.2 每次提交必须跑
+
+```bash
+# 大厅回归
+node --test tests/hall/*.test.mjs
+
+# 4 人联机 + 隐私（约 2 分钟）
+node --test games/arkhamhorror/tests/hall-online.test.mjs
+
+# 诡镇规则 / 集成 / golden replay
+cd games/arkhamhorror && node tools/run-tests.mjs fast
+
+# 观察视图逐字节门禁
+cd games/arkhamhorror && node tools/capture-view-hashes.mjs
+
+# 服务端热路径基准
+node tools/perf-online-snapshot.mjs --seats=4 --moves=250
+```
+
+浏览器：
+
+```bash
+node node_modules/@playwright/test/cli.js test --config tests/hall/playwright.config.mjs
+node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playwright.config.mjs
+```
+
+### 5.3 新增门禁
+
+- **字节**：`tests/hall/online-payload.test.mjs` 断言 4 人 fixture 的命令 / status ≤ 阈值（宽松，只防数量级退化）。
+- **隐私**：静态表 hydration 后与全量视图逐字节一致；私有卡面不在公共表。
+- **性能**：`tools/perf-online-latency.mjs --baseline artifacts/perf/baseline.json`，超过 20% 回归退出 1（不进默认 `npm test`，CI nightly / release 跑）。
+- **顺序**：busy / status 不乱序；coalescing 不丢最终状态。
+
+### 5.4 回滚
+
+- 每项一个 env：`BOARDGAME_ONLINE_BUSY=0`、`..._SLIM_RESPONSE=0`、`..._STATIC=0`、`..._COALESCE=0`、`..._DEFER=0`、`..._AI_BACKGROUND=0`。
+- 客户端 `?online=legacy` 或 capability 缺失 → 全量路径。
+- 静态表 / 增量任何异常回全量。
+- 协议只增可选字段，旧中转不受影响。
+
+## 6. 里程碑
+
+| 阶段 | 内容 | 工作量 | 出口指标 |
+| --- | --- | --- | --- |
+| P0 | harness + 仪表 + 基线 | 1–1.5 天 | 可复现 317 ms |
+| P1 | busy / slim / 序列化 / 静态表 / 合并 | 3–4 天 | 命令 ≤ 300 KB；阻塞 ≤ 150 ms |
+| P2 | 延后 / AI 解耦 / p2p 事件 | 2.5–4 天 | 点击 ≤ 120 ms；AI ≤ 200 ms |
+| P3 | status delta / A1′ / 零拷贝 / 网络 | 2–3 天 | status ≤ 100 KB；relay ≤ 450 ms |
+| P4 | 区域渲染（条件） | 2–3 天 | render p95 ≤ 8 ms |
+
+## 7. 上线
+
+1. 每项独立提交，提交信息写清基线 / 门禁结果。
+2. 先本地 / 内测开 flag，4 人局跑 3 局，再默认。
+3. 大厅版本 bump（wire 变化）；诡镇 Mod 版本 bump（`viewState` 签名变化）。若第三参写进 Mod 契约文档，属于向后兼容扩展，`HALL_API` 不必 bump，但 `lib/mods.js` 注释要同步。
+4. relay 不动；旧中转仍可建房。
+5. 保留上一版一个 release 的全量回退路径。
+6. 诡镇改动在 `games/arkhamhorror` 独立仓库提交并推送；大厅不跟踪该目录内容。
+7. 本路线不引入持久化格式变更；静态表和增量都只存在于运行期。
+
+## 8. 未决问题
+
+1. **静态表按会话还是按席位缓存**：需要先统计 10 个真实存档里自愈补卡的分布；公共表与私有 `privateCards` 的边界要写死。
+2. **发布合并与 AI 演出**：客户端能否只靠 `events.seq` 回放被合并的中间态；需要浏览器验证。
+3. **AI 后台化后的 busy 语义**：是否允许排队下一动作；建议不允许，保持单飞行。
+4. **直连 snapshot 与 result 的到达顺序**：不同浏览器是否稳定；需实测 Chrome / Edge。
+5. **P3.1 status delta 在静态表落地后是否仍值得**：先测再决定。
+6. **存档体积**（约 1.5 MB / 12 ms）是否要单独优化：当前不影响点击延迟。
+
+## 9. 附录
+
+### 9.1 指标口径
+
+- **房主点击**：`pointerup` 到桌面 revision 更新。
+- **客人点击**：`pointerup` 到本地屏幕应用该 revision。
+- **AI 确认**：提交到自己的行动可见；不含 AI 实际思考时间。
+- **房主阻塞**：一次命令内同步 JS + publish + save 的主线程时间（event-loop delay）。
+- **字节**：HTTP `content-length` + WS / DataChannel payload；gzip 前后都记。
+
+### 9.2 关键文件
+
+- 大厅：[lib/server.js](../lib/server.js)（`sessionView` / `cachedSessionView` / `publishOnline` / `onlineCommand` / `snapshotSession`）、[lib/online.js](../lib/online.js)（`publish` / `command`）、[lib/online-sync.js](../lib/online-sync.js)。
+- 浏览器：[public/online-ui.js](../public/online-ui.js)（`accept` / `command` / `refresh`）、[public/p2p.js](../public/p2p.js)（`command` / `receive`）、[public/app.js](../public/app.js)（`render`）。
+- Mod：[games/arkhamhorror/src/integration/observation.js](../games/arkhamhorror/src/integration/observation.js)（`viewState` / `pick`）。
+- 基准：[tools/perf-online-snapshot.mjs](../tools/perf-online-snapshot.mjs)、新 `tools/perf-online-latency.mjs`、[games/arkhamhorror/tests/render-perf.browser.mjs](../games/arkhamhorror/tests/render-perf.browser.mjs)。
+
+### 9.3 旧结论存档
+
+上一版（已删除）的 A0 / A3（逐字节基线、隐私断言）结论继续有效；B（morph）与 C（status delta）的实测见 §2.2，不再重复论证。

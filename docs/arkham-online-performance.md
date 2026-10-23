@@ -85,8 +85,8 @@ node tools/perf-online-snapshot.mjs --seats=4 --moves=250 --trim=0   # 修复前
 
 ## 六、后续计划
 
-上面「仍未解决」里的 #2 → 前端渲染优化 → #1 已排成执行计划，见
-[`arkham-performance-roadmap.md`](arkham-performance-roadmap.md)（含逐字节门禁、隐私断言与验收指标）。
+上面「仍未解决」里的 #2 / #1 已按 2026-10 的实测重新排序：先做字节与发布次数，再做 AI 回包解耦；前端渲染 morph 实测无收益，已取消，只保留条件触发的区域级优化。执行计划见
+[`arkham-performance-roadmap.md`](arkham-performance-roadmap.md)（P0–P4、逐字节/隐私/性能门禁与验收指标）。
 
 ## 七、卡图与混乱标记「过一会儿才出来」（2026-10-23 排查）
 
