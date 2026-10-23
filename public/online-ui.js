@@ -91,7 +91,9 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
   async function run(fn) {
     if (working) return
     working = true; notice = ''; render()
-    try { await fn(); await refresh() } catch (error) { notice = error.message; state.error = error.message }
+    // P1.2：命令自己负责刷新（move/chat 不刷新，靠快照 + 长轮询），这里不再无条件多拉一次
+    // /online/status；失败时 command() 里已有一次 GET /status 兜底。
+    try { await fn() } catch (error) { notice = error.message; state.error = error.message }
     finally { working = false; render() }
   }
   function settingsPanel() {
@@ -195,7 +197,10 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     const perfStarted = perf ? performance.now() : 0
     let transport = 'relay'
     try {
-      const payload = { ...body, operationId: body.operationId || crypto.randomUUID() }
+      // P1.2：move / chat 声明只要摘要响应（客人路径不再随命令传整份视图，快照由长轮询送达）。
+      const slim = action === 'move' || action === 'chat'
+      const payload = { ...body, operationId: body.operationId || crypto.randomUUID(),
+        ...(slim ? { client: { ...(body.client || {}), slim: true } } : {}) }
       let result
       if (p2p.direct() && ['move', 'chat'].includes(action)) {
         transport = 'direct'
@@ -208,7 +213,9 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       } else result = await request('POST', '/online/command', { action, body: payload })
       // 直连命令的总耗时由 p2p.command 记录（它还包含等待本地 revision 的轮询），这里只记中转路径，避免一次操作两条记录。
       if (perf && transport === 'relay') perf.recordCommand({ action, transport, ms: performance.now() - perfStarted })
-      await refresh()
+      // P1.2：move / chat 不再显式 refresh()——响应本身已不含会话，页面靠快照 + 长轮询更新；
+      // start / reset / save / forkCheckpoint / aiRetry 等仍需要这一下拉齐本地状态。
+      if (!slim) await refresh()
       return result
     } catch (error) {
       const latest = await request('GET', '/online/status').catch(() => null)

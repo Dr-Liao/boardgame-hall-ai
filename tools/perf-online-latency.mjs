@@ -27,7 +27,8 @@
 //
 // 指标口径（每个被统计的动作 = 一次真实联机 command；按 seat 0 / 非 0 分组成 host / guest）：
 //   commandMs        该席位大厅 POST /api/online/command 的墙钟往返（含请求编码、服务端处理、响应读取）。
-//   commandBytes     该 POST 响应文本的字节数（含该席位个人视图，因此与 revision/事件数正相关）。
+//   commandBytes     该 POST 响应文本的字节数。房主响应仍含完整个人视图；客人默认按 P1.2 浏览器
+//                    口径（body.client.slim）只收摘要，用 --client=legacy 可复现旧客户端的整份响应。
 //   statusBytes      动作结束后房主 GET /api/online/status 的响应字节（浏览器「拉整份状态」的口径）。
 //   serialDelta      动作期间「行动席位」自己的 online status serial 变化次数（每次变化浏览器就会拉一次 status）。
 //   statusDownlink   ≈ statusBytes × max(serialDelta + 1, 1)。为什么这样折算：online-ui 在收到每次 serial
@@ -84,6 +85,8 @@ const USAGE = `联机延迟基准（同进程多厅 + 本机 relay）
   --ai=0|2           预留后 N 个 AI 席位（合法动作兜底，不联网；默认 0）
   --seed=perf        Arkham 对局种子
   --status=host      动作后测哪些大厅的 status 响应：host|all|none（默认 host）
+  --client=browser   客人命令是否声明 client.slim：browser=真实浏览器口径（默认，客人只收摘要）；
+                     legacy=旧客户端口径（客人响应带整份会话，用于和 P1.2 之前的基线对比）
   --json=<file>      把完整结果 JSON 写到文件（默认不写）
   --baseline=<file>  文件不存在：写本次结果为基线；存在：比较并检测回归（exit 1）
   --compare=<file>   读取另一份运行 JSON 并排对照（不影响退出码）
@@ -111,7 +114,7 @@ function parseInteger(name, raw, min, max) {
 
 function parseArgs(argv) {
   const options = {
-    seats: 4, moves: 100, warmup: 5, ai: 0, seed: 'perf', status: 'host', setup: 'hub',
+    seats: 4, moves: 100, warmup: 5, ai: 0, seed: 'perf', status: 'host', setup: 'hub', client: 'browser',
     json: '', baseline: '', compare: '', keepHome: false, verbose: false, help: false,
   }
   for (const raw of argv) {
@@ -143,6 +146,9 @@ function parseArgs(argv) {
     } else if (key === 'status') {
       if (!['host', 'all', 'none'].includes(value)) throw new ArgError(`--status 只支持 host|all|none，收到 ${value}`)
       options.status = value
+    } else if (key === 'client') {
+      if (!['browser', 'legacy'].includes(value)) throw new ArgError(`--client 只支持 browser|legacy，收到 ${value}`)
+      options.client = value
     } else if (key === 'json') options.json = value
     else if (key === 'baseline') options.baseline = value
     else if (key === 'compare') options.compare = value
@@ -284,14 +290,21 @@ async function request(hall, route, body, timeoutMs) {
   }
 }
 
-function createHall(server, origin) {
+function createHall(server, origin, guest = false) {
   const hall = {
     server,
     origin,
+    guest,
     call: (route, body, timeoutMs = STATUS_TIMEOUT_MS) => request(hall, route, body, timeoutMs),
     // 联机命令统一带 operationId（大厅用它做幂等）。
+    // P1.2 起浏览器客人用 body.client.slim 声明只要摘要；--client=legacy 保留旧客户端口径。
     command: (action, body = {}, timeoutMs = COMMAND_TIMEOUT_MS) => request(hall, 'command', {
-      action, body: { operationId: randomUUID(), ...body },
+      action,
+      body: {
+        operationId: randomUUID(),
+        ...(guest && options.client === 'browser' ? { client: { slim: true } } : {}),
+        ...body,
+      },
     }, timeoutMs),
   }
   return hall
@@ -619,7 +632,7 @@ function compareAgainst(reference, current, file, { strict }) {
   console.log(strict
     ? '对照口径：summary.metrics.*.p50；回归 = 比基线差 >20% 且绝对增量 > 有意义阈值（时延 20ms / 字节 64KiB / publishCount 1）'
     : '对照口径：summary.metrics.*.p50；仅参考，不影响退出码')
-  const CONFIG_LABELS = { setup: '开局口径', seats: '席位数', ai: 'AI 席位数', moves: '统计步数', warmup: '预热步数', statusMode: 'status 口径' }
+  const CONFIG_LABELS = { setup: '开局口径', seats: '席位数', ai: 'AI 席位数', moves: '统计步数', warmup: '预热步数', statusMode: 'status 口径', client: '客户端口径' }
   const mismatches = []
   for (const [key, label] of Object.entries(CONFIG_LABELS)) {
     const before = reference.config?.[key]
@@ -715,7 +728,7 @@ async function main() {
       const server = createServer({ mods, persist: index === 0 })
       await server.ready
       const origin = await listen(server)
-      halls.push(createHall(server, origin))
+      halls.push(createHall(server, origin, index > 0))
     }
     const host = halls[0]
     summary.setupMs = Date.now() - startedAt
@@ -1153,6 +1166,7 @@ function buildRunData({ options, humans, aiSeats, summary, actions, failedAction
       warmup: options.warmup,
       seed: options.seed,
       statusMode: options.status,
+      client: options.client,
       relay: 'in-process',
       relayUrl: 'http://127.0.0.1:<random-port>',
       keepHome: options.keepHome,

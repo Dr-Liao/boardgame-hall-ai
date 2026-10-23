@@ -91,8 +91,10 @@ test('createOnlineUI 注入 recorder 后，accept -> apply、command -> relay �
   const state = { busy: false, chat: {}, catalog: [], online: null, session: null, view: 'library' }
   const value = onlineStatus(1)
   const calls = []
-  const request = async (method, path) => {
+  const sentBodies = []
+  const request = async (method, path, body) => {
     calls.push(`${method} ${path}`)
+    if (body !== undefined) sentBodies.push(body)
     if (method === 'GET' && path.startsWith('/online/status')) return value
     if (method === 'POST' && path === '/online/command') return { ok: true, revision: 1 }
     throw new Error('unexpected request: ' + method + ' ' + path)
@@ -108,6 +110,7 @@ test('createOnlineUI 注入 recorder 后，accept -> apply、command -> relay �
   assert.ok(firstApply.ms >= 0)
 
   const appliesBefore = perf.applies.length
+  const statusBefore = calls.filter(call => call.startsWith('GET /online/status')).length
   const result = await ui.command('chat', { text: 'hello' })
   assert.deepEqual(result, { ok: true, revision: 1 })
   assert.equal(perf.commands.length, 1, '一次命令只产生一条命令记录')
@@ -116,9 +119,14 @@ test('createOnlineUI 注入 recorder 后，accept -> apply、command -> relay �
   assert.equal(command.transport, 'relay', 'Node 里没有 WebRTC，命令走后转 HTTP')
   assert.equal(typeof command.ms, 'number')
   assert.ok(command.ms >= 0)
-  assert.ok(perf.applies.length > appliesBefore, '命令之后的 refresh 也会记录 apply')
+  // P1.2：move / chat 成功后不再显式 refresh——页面靠快照 + 长轮询更新；
+  // 因此 command() 不应再额外产生一次 status 请求 / apply。
+  assert.equal(perf.applies.length, appliesBefore, 'move / chat 命令不再触发额外 refresh')
+  assert.equal(calls.filter(call => call.startsWith('GET /online/status')).length, statusBefore, '命令自身不新拉 /online/status')
   assert.ok(calls.includes('POST /online/command'))
-  assert.ok(calls.filter(call => call.startsWith('GET /online/status')).length >= 1, 'status 走既有 refresh，不新增请求类型')
+  assert.equal(calls.filter(call => call.startsWith('GET /online/status')).length >= 1, true, 'status 仍走既有轮询')
+  const sent = sentBodies.find(body => body?.action === 'chat')
+  assert.equal(sent?.body?.client?.slim, true, 'P1.2：chat 命令必须声明 slim 响应')
 })
 
 test('createOnlineUI 不传 recorder 时行为不变，且不会创建 window.__ONLINE_PERF__', async t => {

@@ -1384,8 +1384,10 @@ async function move(x, y) {
   state.busy = true; render()
   try {
     const r = await api('POST', '/move', { sessionId: original.sessionId, revision: original.state.revision, move: { x, y } })
-    state.session = r.session
-    rememberSession(r.session.sessionId)
+    // P1.2：联机客人拿到的命令响应不含 session（快照随后由长轮询送达），此时保留乐观状态，
+    // 等 accept() 用权威快照覆盖；只有房主 / 本地对局才会直接拿到 session。
+    if (r.session) { state.session = r.session; rememberSession(r.session.sessionId) }
+    else if (r.sessionId) rememberSession(r.sessionId)
   } catch (e) {
     // 服务端拒绝时回滚到服务端返回的最新状态（或落子前状态）。
     state.session = e.session || original
