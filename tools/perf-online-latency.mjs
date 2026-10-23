@@ -27,6 +27,9 @@
 //
 // 指标口径（每个被统计的动作 = 一次真实联机 command；按 seat 0 / 非 0 分组成 host / guest）：
 //   commandMs        该席位大厅 POST /api/online/command 的墙钟往返（含请求编码、服务端处理、响应读取）。
+//                    P2.2 起 AI 回包解耦：带 AI 的动作这里量到的是「命令确认」耗时（不等模型）。
+//   aiWaitMs         P2.2：命令返回 aiPending 后，等到大厅 busy=false（后台 AI 回合完成）的耗时；
+//                    与 commandMs 一起给出「AI 确认 vs AI 完成」两条线。
 //   commandBytes     该 POST 响应文本的字节数。房主响应仍含完整个人视图；客人默认按 P1.2 浏览器
 //                    口径（body.client.slim）只收摘要，用 --client=legacy 可复现旧客户端的整份响应。
 //   statusBytes      动作结束后房主 GET /api/online/status 的响应字节（浏览器「拉整份状态」的口径）。
@@ -339,6 +342,18 @@ async function readStatus(hall) {
   return { bytes: response.bytes, ms: response.ms, json }
 }
 
+// P2.2：AI 回包解耦后，命令响应会在 AI 回合完成前返回（busy=true）；测量「AI 确认」用命令响应
+// 本身的耗时，然后必须等大厅空闲（busy=false）才能推进下一步，否则会收到 SESSION_BUSY。
+async function waitForIdle(hall, timeoutMs = 180000) {
+  const started = performance.now()
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!hall.server.online?.status().busy) return round3(performance.now() - started)
+    await sleep(20)
+  }
+  throw new Error(`大厅 busy 在 ${timeoutMs}ms 内没有恢复（AI 回合未完成？）`)
+}
+
 // 等某个大厅通过中转收到指定 revision 的视角（客人视角异步到达；只读进程内状态，不发 HTTP）。
 async function waitForView(hall, revision, timeoutMs = VIEW_SYNC_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs
@@ -473,6 +488,8 @@ async function driveHubPrep({ host, halls, humans, startView, startBytes }) {
     const ok = !/"ok"\s*:\s*false/.test(command.text.slice(0, 200))
     let errorText = ''
     if (!ok) { try { errorText = JSON.parse(command.text).error || '' } catch { /* 非 JSON */ } }
+    // P2.2：hub 阶段一般没有 AI 先手，但若命令返回 aiPending（后续版本），等后台 AI 完成再推进。
+    if (ok) await waitForIdle(halls[seat])
     hubSteps.push({
       step: hubSteps.length + 1, seat, action: describeMove(move), revision, ok,
       error: errorText || undefined, commandMs: command.ms, commandBytes: command.bytes,
@@ -597,6 +614,8 @@ const TABLE_ROWS = [
   { label: 'publish.member full', key: 'publishMemberFull', unit: 'count' },
   { label: 'publish.member delta', key: 'publishMemberDelta', unit: 'count' },
   { label: 'publish.member skip', key: 'publishMemberSkip', unit: 'count' },
+  // P2.2：AI 后台确认口径——命令响应本身（aiPending 动作）与随后等待 AI 回合完成的时间。
+  { label: 'AI 后台等待 aiWaitMs', key: 'aiWaitMs', unit: 'ms' },
 ]
 
 // --baseline 严格判定用的核心指标与「绝对增量有意义」阈值。
@@ -795,11 +814,9 @@ async function main() {
     if (!startJson.ok) throw new Error(`开局失败：${startJson.error || start.httpStatus}`)
     summary.startMs = start.ms
     summary.startBytes = start.bytes
-    let startView = startJson.session
-    if (!startView) {
-      // 极少见：start 结果被裁剪到只剩 snapshotSession 标记，补一次 status。
-      startView = (await readStatus(host)).json.session
-    }
+    // P2.2：start 可能先返回 aiPending，等先手 AI 回合跑完再取权威 revision（普通局 busy 已为 false）。
+    summary.startAiWaitMs = await waitForIdle(host)
+    const startView = (await readStatus(host)).json.session
     const startRevision = startView.state.revision
     // 等所有客人收到开局快照（否则第一步拿到的是旧 revision）。
     for (const guest of halls.slice(1)) {
@@ -921,6 +938,10 @@ async function main() {
       }))
       // 成功响应可能 1MB+，只取字节数不解析；失败响应很小，解析出 error。
       const success = !/"ok"\s*:\s*false/.test(command.text.slice(0, 200))
+      // P2.2：AI 回包解耦后命令会在 AI 回合完成前返回（busy=true）；命令耗时即「AI 确认」，
+      // 之后必须等后台 AI 空闲再测最终 revision / status（否则会读到中间态或触发 SESSION_BUSY）。
+      const aiPending = !!hall.server.online?.status().busy
+      const aiWaitMs = aiPending && success ? await waitForIdle(hall) : 0
       await sleep(EVENT_LOOP_SETTLE_MS)
       const eventLoop = perf.eventLoop()
       const perfWindow = summarizePerfWindow(perf.recordsSince(perfFrom).records)
@@ -990,6 +1011,8 @@ async function main() {
           attempts: 1,
           commandMs: command.ms,
           commandBytes: command.bytes,
+          aiPending,
+          aiWaitMs,
           statusBytes,
           statusMs: hostMeasured?.ms ?? null,
           statusBytesAll,
@@ -1155,6 +1178,8 @@ function buildMetrics(actions) {
     publishMemberFull: stats(values(actions, action => action.publishMemberKinds.full)),
     publishMemberDelta: stats(values(actions, action => action.publishMemberKinds.delta)),
     publishMemberSkip: stats(values(actions, action => action.publishMemberKinds.skip)),
+    aiPendingActions: actions.filter(action => action.aiPending).length,
+    aiWaitMs: stats(values(actions.filter(action => action.aiPending), action => action.aiWaitMs)),
   }
 }
 
