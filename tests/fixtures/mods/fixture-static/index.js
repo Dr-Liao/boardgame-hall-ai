@@ -6,10 +6,18 @@
 //   - 运行时注入的卡面：落在公共区（table）的进 view.cardsPatch，落在本人手牌的进 view.privateCards；
 //   - 私有手牌只给本人看（和 fixture-cards 一样），用来守「私有卡面绝不进公共表」。
 //
+// P3.2 A1′「共享 state clone」回归探针（仅 FIXTURE_SHARED_PROBE=1 时启用）：
+//   - viewState 记录收到的 state 对象与 options.stateIsolated，并故意写入入参（顶层 __probe +
+//     嵌套 table 数组）——若大厅误把权威 state（而非隔离副本）传进来，checkpointView 能观察到污染；
+//   - checkpointView 每次视图生成后记录权威 session.state 的 JSON 哈希与探针计数，用来断言
+//     「视图生成期间权威 state 的哈希不变」以及「每 revision 只 clone 一次、四席位共用同一副本」。
+//
 // 动作：
 //   {"x":0-2,"y":0-2} 在 3×3 棋盘落子（通用大厅棋盘界面，浏览器回归用）；
 //   {"action":"inject","code":"x-public"|"x-private","target":"table"|"hand"} 注入一张
 //   运行时卡面（不在 state.cards 里，用于触发自愈）；{"action":"pass"} 直接推进座位。
+
+import { createHash } from 'node:crypto'
 
 const RULES_VERSION = 'fixture-static-1'
 const SEAT_COUNT = 4
@@ -33,6 +41,60 @@ const INVESTIGATOR_DEFS = Object.fromEntries(Array.from({ length: 12 }, (_, i) =
 const RUNTIME_CARDS = {
   'x-private': { code: 'x-private', name: '私有自愈卡', text: '只在本人手牌里可见的运行时卡面。', type: 'asset' },
   'x-public': { code: 'x-public', name: '公共自愈卡', text: '出现在公共桌面上、所有席位都可见的运行时卡面。', type: 'asset' },
+}
+
+// P3.2 共享视图探针（FIXTURE_SHARED_PROBE=1 才记录/写入）。测试直接 import 本模块读这些统计。
+const sharedProbe = {
+  viewStateCalls: 0,
+  isolatedViewStateCalls: 0,
+  samples: [],          // [{ revision, isolated, state }]：state 是 viewState 实际收到的入参对象
+  authorityChecks: [],  // [{ revision, hash, topProbes, tableProbes }]：checkpointView 观察到的权威 state
+}
+export function resetSharedProbe() {
+  sharedProbe.viewStateCalls = 0
+  sharedProbe.isolatedViewStateCalls = 0
+  sharedProbe.samples = []
+  sharedProbe.authorityChecks = []
+  return sharedProbe
+}
+export function sharedProbeSnapshot() {
+  return {
+    viewStateCalls: sharedProbe.viewStateCalls,
+    isolatedViewStateCalls: sharedProbe.isolatedViewStateCalls,
+    samples: sharedProbe.samples.map(sample => ({ revision: sample.revision, isolated: sample.isolated, state: sample.state })),
+    authorityChecks: sharedProbe.authorityChecks.map(check => ({ ...check })),
+  }
+}
+
+const probeEnabled = () => process.env.FIXTURE_SHARED_PROBE === '1'
+
+function probeViewState(state, options) {
+  sharedProbe.viewStateCalls++
+  const isolated = !!(options && options.stateIsolated === true)
+  if (isolated) sharedProbe.isolatedViewStateCalls++
+  sharedProbe.samples.push({ revision: Number.isInteger(state?.revision) ? state.revision : -1, isolated, state })
+  // 故意写入入参：共享模式下写的是隔离副本；若大厅把权威 state 直接传进来，checkpointView 会看到。
+  // 只在 FIXTURE_SHARED_MUTATE=1 时写，避免干扰「回退逐席位浅拷贝」对照用例（那一路 Mod 必须只读）。
+  if (process.env.FIXTURE_SHARED_MUTATE !== '1') return
+  state.__probe = (state.__probe || 0) + 1
+  if (Array.isArray(state.table)) state.table.push('__probe')
+}
+
+function stateHash(state) {
+  return createHash('sha256').update(JSON.stringify(state)).digest('hex')
+}
+
+// 每次 sessionView 生成完一个席位的视图后，大厅会用权威 session 调用这里；只做观察，不输出到 wire。
+function checkpointView(session) {
+  if (!probeEnabled()) return undefined
+  const state = session && session.state
+  sharedProbe.authorityChecks.push({
+    revision: Number.isInteger(state?.revision) ? state.revision : -1,
+    hash: stateHash(state),
+    topProbes: Number.isInteger(state?.__probe) ? state.__probe : 0,
+    tableProbes: Array.isArray(state?.table) ? state.table.filter(value => value === '__probe').length : 0,
+  })
+  return undefined
 }
 
 function startState(players) {
@@ -123,6 +185,11 @@ function healCards(state, view, observer, options) {
 }
 
 function viewState(state, observerSeat = null, options = {}) {
+  if (probeEnabled()) probeViewState(state, options)
+  // 故障注入：验证「共享视图异常 → 本局回退逐席位拷贝」的失败模式（只影响测试夹具）。
+  if (options && options.stateIsolated === true && process.env.FIXTURE_SHARED_THROW === '1') {
+    throw new Error('fixture shared view boom')
+  }
   const includeStatic = !(options && options.includeStatic === false)
   const view = { ...state }
   if (!includeStatic) {
@@ -166,6 +233,10 @@ export default {
   },
 
   viewState,
+  // P3.2 A1′：声明 viewState 可接收大厅的共享隔离副本（options.stateIsolated=true）且不修改它。
+  // 用函数形式，便于测试通过 FIXTURE_SHARED_CAPABILITY=off 验证「能力缺失 → 回退逐席位拷贝」。
+  viewStateSharesState: () => process.env.FIXTURE_SHARED_CAPABILITY !== 'off',
+  checkpointView,
 
   // P1.4：公共静态表只能来自这里；返回独立副本，供大厅长期缓存与 cardsPatch 合并。
   staticTables(state) {
