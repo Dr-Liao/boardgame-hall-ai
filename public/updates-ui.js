@@ -100,7 +100,7 @@ export function createUpdatesUI({ h, state, render, request, reloadCatalog }) {
     if (hall.available && hall.latest) {
       const download = hall.download
       let action
-      if (hall.mode === 'dev') action = h('div', { className: 'bg-field-hint' }, '开发版请在项目目录运行：git pull && git submodule update --init')
+      if (hall.mode === 'dev') action = h('div', { className: 'bg-field-hint' }, '开发版请在项目目录运行：git pull（诡镇奇谈单独 git pull）')
       else if (hall.mode === 'manual' || hall.needsFullPackage) {
         action = h('a', { className: 'bg-btn', href: hall.releaseUrl, target: '_blank', rel: 'noopener' },
           hall.needsFullPackage ? '此版本需要下载完整安装包' : '前往发布页下载')

@@ -258,7 +258,7 @@ node tools/perf-online-snapshot.mjs --seats=4 --moves=250
 ## 6. 上线检查清单
 
 - [ ] 每阶段独立提交，提交信息写清门禁结果（哈希一致 / 用例数 / P95）。
-- [ ] 诡镇改动走子模块：先提交 `games/arkhamhorror`，再在大厅仓库 bump。
+- [ ] 诡镇改动在 `games/arkhamhorror` 这个独立仓库里提交并推送；大厅不跟踪它，不需要 bump 指针。
 - [ ] 版本号：A 完成后升 `boardgame-mod.json` 的 `version`（视图实现变了，联机两端应同版本）；C 只影响本机 HTTP，不需要升大厅版本。
 - [ ] 不使用任何持久化格式变更（三个阶段的视图都是运行期数据，不落盘）。
 - [ ] 每阶段结束更新 [`arkham-online-performance.md`](arkham-online-performance.md) 的实测表。

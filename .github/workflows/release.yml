@@ -1,5 +1,5 @@
 # 推送 v<版本> tag 时构建纯大厅免安装包（只内置五子棋和井字棋）、拆分自动更新包、签名清单并发布 GitHub Release。
-# 诡镇奇谈等游戏各自发布，玩家从大厅的游戏商店安装，所以这里不签出游戏子模块。
+# 诡镇奇谈等游戏各自发布，玩家从大厅的游戏商店安装，所以这里不签出游戏仓库。
 # 需要的仓库 Secret：
 #   BOARDGAME_UPDATE_PRIVATE_KEY  更新签名私钥（tools/release/keygen.mjs 生成）
 # 可选的仓库 Secret（Windows 代码签名，见 docs/windows-signing.md）：

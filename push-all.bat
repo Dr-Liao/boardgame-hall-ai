@@ -1,6 +1,6 @@
 @echo off
 REM 一键提交并推送大厅与诡镇奇谈的全部代码（双击运行）。
-REM 先提交并推送子模块，再提交大厅里的子模块指针，保证远端指针有效。
+REM 诡镇奇谈是独立仓库：先提交并推送它，再提交并推送大厅（大厅不跟踪诡镇的内容）。
 REM 推送前会自动 fetch，落后就快进、分叉就把本地提交变基到远端之上。
 REM 可选参数 --yes：使用默认提交说明并跳过确认；--no-pause：结束时不暂停。
 setlocal EnableExtensions
@@ -26,9 +26,8 @@ if errorlevel 1 goto git_missing
 git rev-parse --is-inside-work-tree >nul 2>nul
 if errorlevel 1 goto not_repo
 
-if not exist "games\arkhamhorror\.git" goto submodule_missing
-git -C games\arkhamhorror rev-parse --is-inside-work-tree >nul 2>nul
-if errorlevel 1 goto submodule_missing
+set "HAS_ARKHAM="
+if exist "games\arkhamhorror\.git" set "HAS_ARKHAM=1"
 
 for /f "usebackq delims=" %%I in (`git rev-parse --abbrev-ref HEAD`) do set "HALL_BRANCH=%%I"
 if "%HALL_BRANCH%"=="HEAD" goto detached_hall
@@ -36,14 +35,17 @@ if "%HALL_BRANCH%"=="HEAD" goto detached_hall
 echo [大厅] 当前分支：%HALL_BRANCH%
 git status --short
 echo.
+if not defined HAS_ARKHAM goto skip_arkham_status
 echo [诡镇奇谈]
 git -C games\arkhamhorror status --short
+:skip_arkham_status
 echo.
-
 set "HALL_DIRTY="
 for /f "usebackq delims=" %%I in (`git status --porcelain`) do set "HALL_DIRTY=1"
 set "ARK_DIRTY="
+if not defined HAS_ARKHAM goto skip_arkham_dirty
 for /f "usebackq delims=" %%I in (`git -C games\arkhamhorror status --porcelain`) do set "ARK_DIRTY=1"
+:skip_arkham_dirty
 
 if not defined HALL_DIRTY if not defined ARK_DIRTY goto prepare_arkham
 if defined AUTO goto default_message
@@ -60,6 +62,7 @@ goto prepare_arkham
 set "MSG=chore: sync all modules"
 
 :prepare_arkham
+if not defined HAS_ARKHAM goto hall_section
 for /f "usebackq delims=" %%I in (`git -C games\arkhamhorror rev-parse --abbrev-ref HEAD`) do set "ARK_BRANCH=%%I"
 if not "%ARK_BRANCH%"=="HEAD" goto arkham_branch_ready
 
@@ -104,6 +107,7 @@ echo   推送到 origin/%ARK_BRANCH%...
 git -C games\arkhamhorror push origin "%ARK_BRANCH%"
 if errorlevel 1 goto arkham_push_failed
 
+:hall_section
 echo.
 echo [大厅] 提交...
 git add -A
@@ -125,7 +129,8 @@ git push origin "%HALL_BRANCH%"
 if errorlevel 1 goto hall_push_failed
 
 echo.
-echo 推送完成：大厅 %HALL_BRANCH%，诡镇奇谈 %ARK_BRANCH%。
+echo 推送完成：大厅 %HALL_BRANCH%
+if defined HAS_ARKHAM echo              诡镇奇谈 %ARK_BRANCH%
 set "RESULT=0"
 goto finish
 
@@ -136,12 +141,6 @@ goto finish
 
 :not_repo
 echo [错误] 当前目录不是 git 仓库，无法推送。
-set "RESULT=1"
-goto finish
-
-:submodule_missing
-echo [错误] 诡镇奇谈子模块不存在或未初始化。
-echo        请先运行 pull-latest.bat。
 set "RESULT=1"
 goto finish
 

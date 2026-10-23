@@ -1,6 +1,6 @@
 @echo off
 REM 一键拉取大厅和诡镇奇谈的最新代码（双击运行）。
-REM 大厅 = 当前仓库；诡镇奇谈 = games/arkhamhorror 子模块，版本由大厅锁定。
+REM 大厅 = 当前仓库；诡镇奇谈 = 克隆在 games/arkhamhorror 的独立仓库（大厅不跟踪它）。
 REM 可选参数 --no-pause：结束时不要暂停，便于被其他脚本调用。
 setlocal
 chcp 65001 >nul
@@ -28,11 +28,29 @@ git pull --ff-only --no-rebase --tags
 if errorlevel 1 goto pull_failed
 
 echo.
-echo [2/3] 更新诡镇奇谈子模块...
-git submodule sync --recursive
-if errorlevel 1 goto submodule_failed
-git submodule update --init --recursive
-if errorlevel 1 goto submodule_failed
+echo [2/3] 更新诡镇奇谈...
+if exist "games\arkhamhorror\.git" goto arkham_pull
+if exist "games\arkhamhorror" goto arkham_broken
+echo   未找到 games\arkhamhorror，正在克隆...
+git clone https://github.com/Dr-Liao/boardgame-arkhamhorror.git games\arkhamhorror
+if errorlevel 1 goto arkham_failed
+goto arkham_done
+
+:arkham_pull
+set "arkham_dirty="
+for /f "usebackq delims=" %%I in (`git -C games\arkhamhorror status --porcelain`) do set "arkham_dirty=1"
+if defined arkham_dirty goto arkham_dirty_tree
+for /f "usebackq delims=" %%I in (`git -C games\arkhamhorror rev-parse --abbrev-ref HEAD`) do set "arkham_branch=%%I"
+if not "%arkham_branch%"=="HEAD" goto arkham_pull_ready
+echo   诡镇奇谈处于游离状态，切回 main...
+git -C games\arkhamhorror switch main
+if errorlevel 1 goto arkham_failed
+
+:arkham_pull_ready
+git -C games\arkhamhorror pull --ff-only --no-rebase --tags
+if errorlevel 1 goto arkham_failed
+
+:arkham_done
 
 echo.
 echo [3/3] 当前版本：
@@ -79,11 +97,26 @@ echo        - 若提示本地与远端分叉，请先处理本地提交（git pu
 set "result=1"
 goto finish
 
-:submodule_failed
+:arkham_broken
 echo.
-echo [错误] 更新诡镇奇谈子模块失败。
-echo        - 若子模块内有未提交改动，请先处理后重试；
-echo        - 也可手动运行：git submodule update --init --recursive
+echo [错误] games\arkhamhorror 已存在但不是 git 仓库，无法自动克隆。
+echo        请先把它移走或删除，然后重新运行本脚本。
+set "result=1"
+goto finish
+
+:arkham_dirty_tree
+echo.
+echo [错误] 诡镇奇谈有未提交的改动，为避免覆盖，已停止更新。
+echo        请先提交或暂存（git stash）后重试。当前改动：
+git -C games\arkhamhorror status --short
+set "result=1"
+goto finish
+
+:arkham_failed
+echo.
+echo [错误] 更新诡镇奇谈失败。
+echo        - 请检查网络能否访问 GitHub；
+echo        - 也可手动在 games\arkhamhorror 里运行 git pull --ff-only。
 set "result=1"
 goto finish
 

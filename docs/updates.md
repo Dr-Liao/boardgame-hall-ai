@@ -30,7 +30,7 @@ GitHub
 
    之后把私钥备份到安全的地方，再从本机删除。私钥丢失后，只能生成新密钥并发布一个同时带新旧公钥的大厅版本。
 
-3. **私有仓库的额外 Secret**：如果大厅仓库是私有的，在游戏仓库配置 `HALL_REPO_TOKEN`（能读取大厅仓库的 token），游戏发布时要用大厅仓库里的打包脚本。大厅发布不签出游戏子模块，不需要额外 token。另外要注意，玩家下载 Release 资源要求仓库公开。
+3. **私有仓库的额外 Secret**：如果大厅仓库是私有的，在游戏仓库配置 `HALL_REPO_TOKEN`（能读取大厅仓库的 token），游戏发布时要用大厅仓库里的打包脚本。大厅发布不签出游戏仓库，不需要额外 token。另外要注意，玩家下载 Release 资源要求仓库公开。
 
 4. **游戏目录**是大厅仓库的 `registry/index.json`，大厅从 `main` 分支的 raw 地址读取。新增或下架游戏时，只要修改这个文件并推送到 `main`，不需要发布大厅新版本：
 
@@ -155,7 +155,7 @@ GitHub
 
 游戏包里不能有运行时 npm 依赖，因为玩家的机器上不会执行 `npm install`。
 
-发布方式和大厅一样（打 tag 触发 CI），脚本在大厅仓库的 `games/arkhamhorror/release.bat`：它会检查工作区干净且与 `origin/main` 同步，只更新本仓库 `package.json` 和 `boardgame-mod.json` 的版本号，提交、打 tag 并推送到诡镇仓库，不改动大厅的版本。也可以手动修改 `boardgame-mod.json` 的 `version`，然后打 tag 并推送。发布后大厅仓库里的子模块指针会指向新提交，下次发布大厅前先运行 `push-all.bat` 把它提交掉。仓库里的 `.github/workflows/release.yml` 会签出大厅仓库，调用 `tools/release/pack-mod.mjs` 打包并签名，最后发布 Release。发布产物包括 `<id>-<版本>.zip`、增量更新用的 `<id>-<版本>.files.json` 和 `boardgame-mod.release.json`。玩家已有该游戏的旧版本（包括大厅内置的版本）时，只下载变化的文件。
+发布方式和大厅一样（打 tag 触发 CI），脚本在大厅仓库的 `games/arkhamhorror/release.bat`：它会检查工作区干净且与 `origin/main` 同步，只更新本仓库 `package.json` 和 `boardgame-mod.json` 的版本号，提交、打 tag 并推送到诡镇仓库，不改动大厅的版本。也可以手动修改 `boardgame-mod.json` 的 `version`，然后打 tag 并推送。诡镇奇谈是独立克隆（`games/arkhamhorror`），大厅不跟踪它的内容，所以发布诡镇后大厅仓库不需要任何提交。仓库里的 `.github/workflows/release.yml` 会签出大厅仓库，调用 `tools/release/pack-mod.mjs` 打包并签名，最后发布 Release。发布产物包括 `<id>-<版本>.zip`、增量更新用的 `<id>-<版本>.files.json` 和 `boardgame-mod.release.json`。玩家已有该游戏的旧版本（包括大厅内置的版本）时，只下载变化的文件。
 
 `hallApi` 高于玩家大厅支持版本的游戏不会被安装，界面会提示「需要先更新大厅」。修改 Mod 接口契约时，先发布支持新 `hallApi` 的大厅，再发布依赖它的游戏。
 
@@ -195,7 +195,7 @@ edition.json           仅纯大厅版有：列出内置的游戏
 | --- | --- | --- |
 | `portable` | 新版免安装包 | 可下载并切换大厅版本 |
 | `manual` | 旧版免安装包等环境 | 只提示去发布页下载 |
-| `dev` | git 仓库 | 只提示运行 `git pull && git submodule update --init` |
+| `dev` | git 仓库 | 只提示运行 `git pull`（诡镇在 `games/arkhamhorror` 里单独 `git pull`） |
 
 游戏商店在所有模式下都可以使用。
 

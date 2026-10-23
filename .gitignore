@@ -26,3 +26,6 @@ artifacts/
 
 # 在仓库根目录运行发布版时生成的存档与设置
 user-data/
+
+# 诡镇奇谈是独立仓库，按需克隆到 games/arkhamhorror；大厅不跟踪它的内容
+/games/arkhamhorror/

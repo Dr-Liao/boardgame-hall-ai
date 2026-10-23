@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | `games/gobang` | 双人对弈 | 五子棋，Mod 的参考实现 |
 | `games/ox` | 双人对弈 | 井字棋 |
-| `games/arkhamhorror` | 合作卡牌 | 诡镇奇谈：卡牌版，独立仓库 [boardgame-arkhamhorror](https://github.com/Dr-Liao/boardgame-arkhamhorror)（git 子模块），见 [诡镇 README](games/arkhamhorror/README.md) |
+| `games/arkhamhorror` | 合作卡牌 | 诡镇奇谈：卡牌版，独立仓库 [boardgame-arkhamhorror](https://github.com/Dr-Liao/boardgame-arkhamhorror)（按需克隆到 `games/arkhamhorror`，大厅不跟踪），见 [诡镇 README](games/arkhamhorror/README.md) |
 
 ---
 
@@ -21,12 +21,14 @@
 需要 Node.js 22.15+。
 
 ```bash
-git clone --recursive https://github.com/Dr-Liao/boardgame-hall-ai.git
-# 已经克隆过的话：git submodule update --init
+git clone https://github.com/Dr-Liao/boardgame-hall-ai.git
+cd boardgame-hall-ai
+# 可选：诡镇奇谈是独立仓库，克隆到 games/arkhamhorror 即可被大厅发现
+git clone https://github.com/Dr-Liao/boardgame-arkhamhorror.git games/arkhamhorror
 npm install        # 同时安装大厅与 games/* 下各 Mod 的依赖（npm workspaces）
 ```
 
-不拉取子模块时大厅仍可运行，只是没有诡镇奇谈。
+不克隆诡镇奇谈时大厅仍可运行，只是没有这款游戏；之后运行 `pull-latest.bat` 会自动补上。
 
 **启动：**
 

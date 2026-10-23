@@ -29,9 +29,8 @@ if errorlevel 1 goto node_missing
 
 git rev-parse --is-inside-work-tree >nul 2>nul
 if errorlevel 1 goto not_repo
-if not exist "games\arkhamhorror\.git" goto submodule_missing
-git -C games\arkhamhorror rev-parse --is-inside-work-tree >nul 2>nul
-if errorlevel 1 goto submodule_missing
+set "HAS_ARKHAM="
+if exist "games\arkhamhorror\.git" set "HAS_ARKHAM=1"
 
 for /f "usebackq delims=" %%I in (`git rev-parse --abbrev-ref HEAD`) do set "HALL_BRANCH=%%I"
 if /i not "%HALL_BRANCH%"=="main" goto not_main
@@ -39,9 +38,11 @@ if /i not "%HALL_BRANCH%"=="main" goto not_main
 set "HALL_DIRTY="
 for /f "usebackq delims=" %%I in (`git status --porcelain`) do set "HALL_DIRTY=1"
 set "ARK_DIRTY="
+if not defined HAS_ARKHAM goto skip_arkham_dirty
 for /f "usebackq delims=" %%I in (`git -C games\arkhamhorror status --porcelain`) do set "ARK_DIRTY=1"
+:skip_arkham_dirty
 if defined HALL_DIRTY goto dirty_tree
-if defined ARK_DIRTY goto submodule_dirty
+if defined ARK_DIRTY goto mod_dirty
 
 echo 正在从远端获取最新状态...
 git fetch --tags origin
@@ -133,12 +134,6 @@ echo [错误] 当前目录不是 git 仓库，无法发布。
 set "RESULT=1"
 goto finish
 
-:submodule_missing
-echo [错误] 诡镇奇谈子模块不存在或未初始化。
-echo        请先运行 pull-latest.bat。
-set "RESULT=1"
-goto finish
-
 :not_main
 echo [错误] 发布必须在 main 分支上进行。
 echo        当前分支：%HALL_BRANCH%
@@ -154,8 +149,8 @@ git status --short
 set "RESULT=1"
 goto finish
 
-:submodule_dirty
-echo [错误] 诡镇奇谈有未提交的改动，大厅工作区因此不干净，发布前必须处理。
+:mod_dirty
+echo [错误] 诡镇奇谈有未提交的改动，发布前必须处理。
 echo        请先在诡镇奇谈里提交并推送（或运行 push-all.bat），然后重试。
 echo        当前改动：
 git -C games\arkhamhorror status --short
