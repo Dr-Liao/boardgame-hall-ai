@@ -548,7 +548,10 @@ test('status updates wake immediately and host operations use the local authorit
   assert.ok(value.session.events.some(e => e.text === 'wake up immediately'))
   assert.equal(host.server.online.metrics.localCommands, metric.localCommands + 1)
   const bytes = host.server.online.metrics.sentBytes - metric.sentBytes
-  const full = host.server.online.metrics.fullBytes - metric.fullBytes
+  // P1.3 起 metrics.fullBytes 只在 BOARDGAME_PERF=1 时统计；这里用同一份客人视图估算
+  // 「如果每次变化都发全量」的体积，断言实际下行远小于它（增量生效）。
+  const guestView = (await guest.call('status')).session
+  const full = Buffer.byteLength(JSON.stringify(guestView))
   assert.ok(bytes < full / 10, `delta ${bytes} versus full ${full}`)
   t.diagnostic(`chat snapshot payload: ${bytes} bytes versus ${full} bytes without deltas`)
 })
