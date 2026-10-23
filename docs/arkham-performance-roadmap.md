@@ -209,7 +209,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 > 目标：单次命令 ≤ 300 KB，每次行动 status 总下行 ≤ 1.1 MB，房主阻塞 ≤ 150 ms。
 > 这一阶段不改延迟语义（仍然等 AI），只砍数据面。
-> **进度（2026-10-23）**：P1.1 ✅；P1.2 / P1.3 / P1.4 / P1.5 待做。当前 100 步 p50：host 命令往返 297 ms、guest 311 ms、命令响应 1.22 MB、status 下行 3.65 MB、阻塞 240 ms、`publishOnline` 197 ms（基线 §1.6）。
+> **进度（2026-10-23）**：P1.1 ✅、P1.2 ✅、P1.3 ✅；P1.4 进行中、P1.5 待做。当前 100 步 p50（P1.3 后）：host 命令往返 241 ms、guest 241 ms、host 命令响应 1.15 MB / guest 0.1 KB、status 响应 1.22 MB、status 下行 3.65 MB、阻塞 190 ms、`publishOnline` 145 ms（基线 §1.6）。
 
 #### P1.1 busy 轻量消息（0.5 天）
 
@@ -254,6 +254,13 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 **验收**：客人点击后 300 ms 内看到自己的行动；4 人测试；无重复 refresh；全仓 `r.session` 调用点审计，客人路径下 `session` 缺失不抛错。
 
+**状态：已完成（2026-10-23）** ✅
+
+- 实现：客人命令体带 `client.slim` 时，host 只回 `{ ok, sessionId, revision, eventCount, busy }`；房主 / 旧客户端 / 不带 slim 的调用方仍拿完整 session。`online-ui.command` 的 move/chat 不再 `refresh()`，`run()` 去掉额外 refresh，失败路径保留一次 `GET /status` 兜底。`app.js` 与 Arkham `game-ui.js` 把命令响应里的 session 视为可选，客人保留乐观状态等快照覆盖。开关 `BOARDGAME_ONLINE_SLIM=0`。
+- 实测（工具 `--client=browser` 口径，P1.2+P1.3 合计 100 步 p50）：客人命令响应 1228.8 KB → **0.1 KB**；host 命令往返 297 → **241 ms**；guest 311 → **241 ms**。房主命令响应仍 1.15 MB（P1.4 静态表处理）。
+- 验证：浏览器回归 9/9（真实 UI 落子、聊天、直连 P2P）、`tests/hall/online-slim.test.mjs` 3 例、大厅 129/129；`--client=legacy` 可复现 P1.2 之前「客人响应带整份会话」的口径做对照。
+- 设计差异：`run()` 对 ready 等非命令操作不再显式 refresh，由既有长轮询在 serial 变化时立即返回；`online-ui` 的错误路径仍兜底拉一次 status。
+
 #### P1.3 序列化清理（0.5 天）
 
 **现状**：`online.publish` 每席位 `JSON.parse(JSON.stringify(...))`、`JSON.stringify(delta)` / `JSON.stringify(full)`、metrics 再 stringify。
@@ -269,6 +276,13 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 **风险**：共享视图被下游修改；开发环境加 `Object.freeze` 或测试断言，生产保留注释。
 
 **验收**：`online-sync.test.mjs` + 4 人测试；profile 无回退。
+
+**状态：已完成（2026-10-23）** ✅
+
+- 实现：`publish` 不再做 `JSON.parse(JSON.stringify(...))` 防御性拷贝（视图每 revision 新对象、发布后不再修改，多席位多步用例覆盖）；全量/增量各只序列化一次，长度比较后直接复用同一字符串；新增 `sendSerializedSnapshot` 直接拼 `snapshot` 信封，socket 层不再二次 stringify；`metrics.fullBytes` 只在 `BOARDGAME_PERF=1` 时统计。
+- 实测（100 步 p50）：`publishOnline` 196.9 → **144.9 ms（−26%）**；事件循环阻塞 239.5 → **189.7 ms**。
+- 验证：online 相关 27/27、大厅 129/129、浏览器 9/9；`online.test` 的增量体积断言改用同一份客人视图估算全量，不再依赖生产 metrics。
+- 风险与取舍：若未来有代码在发布后修改视图对象，增量基线会错位；当前视图缓存按 revision 不可变，已在注释与多人多步用例中约束。
 
 #### P1.4 静态表只发一次（1–1.5 天）
 
@@ -440,6 +454,8 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 | 每次行动 status 总下行 | 3.3 MB | ≤ 1.1 MB | ≤ 1.1 MB | ≤ 100 KB |
 | `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 90 ms | ≤ 70 ms | ≤ 60 ms |
 | 4 人命令往返 | 317 ms | ≤ 200 ms | ≤ 120 ms | — |
+
+> 当前进度（P1.3 后，harness 100 步 p50）：4 人命令往返 241 ms、命令响应 host 1.15 MB / guest 0.1 KB、status 下行 3.65 MB、阻塞 190 ms、`publishOnline` 145 ms。距 P1 出口：命令 ≤300 KB（P1.4）、status 下行 ≤1.1 MB（P1.4+P1.5）、阻塞 ≤150 ms（P1.5）、往返 ≤200 ms。
 
 ### 5.2 每次提交必须跑
 
