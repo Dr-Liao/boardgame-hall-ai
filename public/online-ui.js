@@ -218,6 +218,13 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       } else result = await request('POST', '/online/command', { action, body: payload })
       // 直连命令的总耗时由 p2p.command 记录（它还包含等待本地 revision 的轮询），这里只记中转路径，避免一次操作两条记录。
       if (perf && transport === 'relay') perf.recordCommand({ action, transport, ms: performance.now() - perfStarted })
+      // P2.2：AI 回合在后台继续（aiPending）时，命令响应会先回来；这里立刻把「忙碌 + AI 思考中」
+      // 写进本地联机状态，避免 start/aiRetry 随后的 long-poll 刷新把等待窗口拖长，
+      // 同时让 Mod UI（看 state.online.busy / aiPending）在 state.busy 被清掉后仍然禁用行动入口。
+      if (result && (result.aiPending === true || result.busy === true)) {
+        state.online = { ...(state.online || {}), busy: true, aiPending: result.aiPending === true }
+        renderChrome()
+      }
       // P1.2：move / chat 不再显式 refresh()——响应本身已不含会话，页面靠快照 + 长轮询更新；
       // start / reset / save / forkCheckpoint / aiRetry 等仍需要这一下拉齐本地状态。
       if (!slim) await refresh()
@@ -232,7 +239,9 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     const online = state.online, room = online?.room
     if (!room) return null
     const me = mine(), host = room.members.find(m => m.host)
-    const connection = !online.connected ? '连接中断，正在重连…' : !host?.online ? '房主离线，等待恢复…' : online.busy ? '正在处理行动…' : `已连接 · ${p2p.status()}`
+    // P2.2：AI 在后台思考时显示更明确的状态（旧大厅没有 aiPending 字段时退回原文案）。
+    const connection = !online.connected ? '连接中断，正在重连…' : !host?.online ? '房主离线，等待恢复…'
+      : online.busy ? (online.aiPending ? 'AI 思考中…' : '正在处理行动…') : `已连接 · ${p2p.status()}`
     return h('section', { className: 'bg-online-banner', 'aria-label': '联机房间' },
       h('div', { className: 'bg-online-summary' }, h('strong', {}, room.game.name),
         h('span', { className: 'bg-online-meta' }, h('span', { className: 'bg-room-code' }, `房间 ${room.code}`), h('span', { role: 'status' }, `${connection} · 席位 ${Number(me?.seat) + 1}`))),
