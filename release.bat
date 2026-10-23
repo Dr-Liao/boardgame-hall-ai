@@ -23,7 +23,13 @@ echo ==================================================
 echo.
 
 where git >nul 2>nul
+if not errorlevel 1 goto git_ready
+REM Git for Windows 装好但没进 PATH 很常见，兜底找一下。
+for %%D in ("%ProgramFiles%\Git\cmd" "%ProgramFiles(x86)%\Git\cmd" "%LOCALAPPDATA%\Programs\Git\cmd") do if exist "%%~D\git.exe" set "PATH=%%~D;%PATH%"
+where git >nul 2>nul
 if errorlevel 1 goto git_missing
+
+:git_ready
 where node >nul 2>nul
 if errorlevel 1 goto node_missing
 
