@@ -92,6 +92,12 @@ test('browser peers exchange moves and snapshots directly, then fall back when a
   await expect(guest.locator('.bg-cell-black')).toHaveCount(1)
   await guest.locator('.bg-cell').nth(1).click()
   await expect(host.locator('.bg-cell-white')).toHaveCount(1)
+  // P2.3：直连命令等待本地 revision 由快照/长轮询事件唤醒，不再每 100ms 轮询 /online/status。
+  const p2pStats = await guest.evaluate(() => window.__P2P_STATS__ || null)
+  expect(p2pStats).toBeTruthy()
+  expect(p2pStats.waits).toBeGreaterThan(0)
+  expect(p2pStats.timeouts).toBe(0)
+  expect(p2pStats.fallbackStatusFetches).toBe(0)
   expect(halls[0].server.online.metrics.directBytes).toBeGreaterThan(before.directBytes)
   expect(halls[0].server.online.metrics.sentBytes).toBe(before.sentBytes, 'game snapshots should bypass the relay while directly connected')
   await host.close()

@@ -8,14 +8,65 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
   let current = null, roomKey = '', lastSignal = 0, signalChain = Promise.resolve(), unavailable = false, nextAttemptAt = 0, failures = 0
   const peers = new Map()
   const pending = new Map()
+  // P2.3：直连命令的「等本地 revision」不再每 100ms 轮询 /online/status，而是由
+  // 直连快照（receive → direct-snapshot 返回的 status）或既有 status 长轮询唤醒。
+  const revisionWaiters = new Map()
+  let waiterSeq = 0
+  const stats = { waits: 0, resolvedBySnapshot: 0, resolvedByStatus: 0, fallbackStatusFetches: 0, timeouts: 0 }
+  // 诊断口径（浏览器用例断言「无轮询、由快照解析」用），不影响业务逻辑。
+  globalThis.__P2P_STATS__ = stats
   const own = () => current?.room?.members?.find(member => member.id === current.memberId)
   const host = () => current?.room?.members?.find(member => member.host)
   const active = peer => peer?.channel?.readyState === 'open' && peer.pc.connectionState === 'connected'
   const direct = () => !own()?.host && !!peers.get(host()?.id)?.ready && active(peers.get(host()?.id))
+  const sameSession = (session, target) => !!session && session.sessionId === target.sessionId
+    && (session.state?.revision ?? -1) >= target.revision
+    && (session.events?.length ?? 0) >= target.eventCount
+  // 用最新 status（直连快照落本地后的返回，或既有 /online/status 长轮询）唤醒等待者。
+  function settleWaiters(status, source) {
+    if (!status?.session || !revisionWaiters.size) return
+    for (const [id, waiter] of [...revisionWaiters]) {
+      if (!sameSession(status.session, waiter)) continue
+      revisionWaiters.delete(id); clearTimeout(waiter.timer)
+      if (source === 'snapshot') stats.resolvedBySnapshot++
+      else stats.resolvedByStatus++
+      waiter.resolve(status.session)
+    }
+  }
+  function waitForRevision(target, peer) {
+    if (sameSession(current?.session, target)) return Promise.resolve(current.session)
+    stats.waits++
+    return new Promise((resolve, reject) => {
+      const id = ++waiterSeq
+      const waiter = { peerId: peer?.id || '', sessionId: target.sessionId, revision: target.revision,
+        eventCount: target.eventCount, resolve, reject }
+      waiter.timer = setTimeout(async () => {
+        if (!revisionWaiters.has(id)) return
+        // 超时兜底：只拉一次 status（不轮询）；仍不满足才回退中转。
+        stats.fallbackStatusFetches++
+        let status = null
+        try { status = await request('GET', '/online/status') } catch { /* 连接不可用，走回退 */ }
+        if (status && sameSession(status.session, waiter)) {
+          revisionWaiters.delete(id); stats.resolvedByStatus++; return resolve(status.session)
+        }
+        if (!revisionWaiters.has(id)) return
+        revisionWaiters.delete(id); stats.timeouts++
+        reject(Object.assign(new Error('直连状态未及时同步'), { transport: true }))
+      }, 15000)
+      waiter.timer.unref?.()
+      revisionWaiters.set(id, waiter)
+    })
+  }
 
   function rejectPending(peer, error) {
     for (const [id, item] of pending) if (item.peer === peer) {
       clearTimeout(item.timer); pending.delete(id); item.reject(error)
+    }
+  }
+  function rejectWaiters(peer, error) {
+    for (const [id, waiter] of [...revisionWaiters]) {
+      if (peer && waiter.peerId !== peer.id) continue
+      revisionWaiters.delete(id); clearTimeout(waiter.timer); waiter.reject(error)
     }
   }
   function closePeer(peer) {
@@ -26,6 +77,7 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
     peer.channel?.close()
     peer.pc.close()
     rejectPending(peer, Object.assign(new Error('直连已断开'), { transport: true }))
+    rejectWaiters(peer, Object.assign(new Error('直连已断开'), { transport: true }))
     onChange()
     if (current?.connected && !own()?.host && host()?.id === peer.id) {
       nextAttemptAt = Date.now() + Math.min(60000, 5000 * 2 ** Math.min(failures++, 4))
@@ -33,6 +85,7 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
     }
   }
   function reset() {
+    rejectWaiters(null, Object.assign(new Error('直连连接已重置'), { transport: true }))
     for (const peer of [...peers.values()]) closePeer(peer)
     peers.clear()
     unavailable = false
@@ -176,7 +229,11 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
         await send(peer, { type: 'result', id: packet.id, ok: true, data })
       } catch (error) { await send(peer, { type: 'result', id: packet.id, ok: false, error: error.message }) }
     } else if (!own()?.host && packet.type === 'snapshot') {
-      await request('POST', '/online/direct-snapshot', { data: packet.data })
+      // P2.3：direct-snapshot 返回的 status 直接用来唤醒等待本地 revision 的命令（不再轮询）。
+      // 同时更新本地 current：若命令回复比快照晚到，waitForRevision 能立即看到已追上的 revision。
+      const status = await request('POST', '/online/direct-snapshot', { data: packet.data })
+      if (status?.session) current = status
+      settleWaiters(status, 'snapshot')
     } else if (!own()?.host && packet.type === 'ready') {
       peer.ready = true
       onChange()
@@ -212,6 +269,8 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
   }
   function update(status) {
     current = status
+    // 既有 /online/status 长轮询返回的新状态也可以直接唤醒等待者（直连快照与轮询先到均可）。
+    settleWaiters(status, 'status')
     const key = status?.room ? `${status.instanceId}:${status.room.code}:${status.memberId}` : ''
     if (key !== roomKey || !status?.connected) {
       reset(); roomKey = key; lastSignal = 0
@@ -229,7 +288,7 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
   function command(action, body) {
     const peer = peers.get(host()?.id)
     if (!active(peer) || !peer.ready) return Promise.reject(Object.assign(new Error('直连不可用'), { transport: true }))
-    // ?perf=1 时记录直连命令的总耗时（含等待本地 revision 的轮询）；未注入 recorder 时行为与原来完全一致。
+    // ?perf=1 时记录直连命令的总耗时（含等待本地 revision）；未注入 recorder 时行为与原来完全一致。
     const perfStarted = perf ? performance.now() : 0
     const result = new Promise((resolve, reject) => {
       const id = crypto.randomUUID()
@@ -239,20 +298,14 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
         if (pending.delete(id)) { clearTimeout(timer); reject(Object.assign(error, { transport: true })) }
       })
     }).then(async result => {
-      const deadline = Date.now() + 15000
-      while (Date.now() < deadline && active(peer)) {
-        let local
-        try { local = await request('GET', '/online/status') }
-        catch (error) {
-          closePeer(peer)
-          throw Object.assign(error, { transport: true })
-        }
-        if (local.session?.sessionId === result.sessionId && local.session.state.revision >= result.revision
-            && local.session.events.length >= result.eventCount) return { ...result, session: local.session }
-        await sleep(100)
+      // P2.3：事件化等待本地 revision——快照先到就在这里立即 resolve，不再每 100ms 轮询 status。
+      try {
+        const session = await waitForRevision(result, peer)
+        return { ...result, session }
+      } catch (error) {
+        closePeer(peer)
+        throw error
       }
-      closePeer(peer)
-      throw Object.assign(new Error('直连状态未及时同步'), { transport: true })
     })
     if (!perf) return result
     const record = () => perf.recordCommand({ action, transport: 'direct', ms: performance.now() - perfStarted })
