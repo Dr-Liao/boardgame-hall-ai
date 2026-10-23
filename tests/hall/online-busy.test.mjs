@@ -5,6 +5,9 @@
 //   2. status 不写 sentSnapshots 的增量基线：下一次行动仍然按上一份会话正确 diff，客人视图与房主一致；
 //   3. 客人 /status 的 busy 在行动结束后恢复 false；
 //   4. BOARDGAME_ONLINE_BUSY=0 时回到旧行为（busy 变化也发整份会话，无 publish.status 记录）。
+//
+// P1.5 发布合并后：busy=true 仍在命令开始就走轻量 status；busy=false 随命令末尾 flush 的
+// 最终快照下发（不必再补一条 status），原「finally 必发 busy status」的断言随之放宽。
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -115,8 +118,9 @@ test('busy 变化走轻量 status：只同步运行状态，不重发会话，�
   const busyOnly = publishes.filter(entry => entry.statusSent > 0)
   assert.ok(busyOnly.length >= 1, 'finally 的 busy 变化应走 status 消息')
   assert.ok(busyOnly.some(entry => entry.published === 0), 'busy 单独变化时不应重发整份会话')
-  assert.ok(records.some(entry => entry.event === 'publish.status' && entry.busy === false),
-    '应记录一条 busy=false 的 publish.status')
+  assert.ok(records.some(entry => entry.event === 'publishOnline' && entry.busy === false
+    && (entry.published > 0 || entry.statusSent > 0)),
+    'busy=false 应随命令末尾的最终快照（或轻量 status）下发')
 
   // 让客人追上 revision，确认 status 消息没有破坏 receivedSnapshot 的增量基线。
   const hostView = (await host.call('status')).session
