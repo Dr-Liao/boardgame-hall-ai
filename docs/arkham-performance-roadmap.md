@@ -365,6 +365,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 > 目标：房主点击 ≤ 120 ms，带 AI 确认 ≤ 200 ms，直连客人 ≤ 300 ms。
 > 这一阶段改时序 / 并发语义，风险高于 P1。
+> **进度（2026-10-24）**：P2.3 ✅（直连命令事件化，去 100 ms 轮询）、P2.1 ✅（实现完成，默认关闭：P1.4 后实测收益在噪声内）；P2.2（AI 回合与回包解耦）进行中。
 
 #### P2.1 非行动者视图延后（1 天）
 
@@ -381,6 +382,13 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 **风险**：其他玩家短暂落后；下一动作在其他人收到前开始（busy 锁仍阻止）；测试顺序。
 
 **验收**：4 人点击后各自 ≤ 2 帧内更新；无 stale revision 提交。
+
+**状态：已完成（2026-10-24，默认关闭）** ✅ / ⚠️
+
+- 实现：`publishOnline({ onlySeats, mode })` + `flushPublish({ actorSeat })`；`BOARDGAME_ONLINE_DEFER=1` 时命令内的会话发布整体推后到命令响应之后的后台 `setImmediate`（mode=background），失败模式只会晚一拍；默认关闭。
+- 实测（同机 harness 100 步 A/B）：host 命令往返 94.5 → 91.7~102.1 ms、guest 117.6 → 114.1 ms、阻塞 51.1 → 49.3 ms、publishCount 2 → 2、publishMs 35.5 → 34.5 ms —— 全部落在 ±3ms 噪声内。
+- 默认关闭的原因：P1.4 静态表落地后单席位视图构建已降到 ~1–5 ms，原本预期的「60–80 ms 建视图」不复存在；开启后非行动者会晚一拍看到行动，收益不抵一致性代价。开关保留，供更大房间 / 5+ 席位时再 A/B。
+- 测试：`tests/hall/online-defer.test.mjs` 2 例（DEFER=1 时整体延后 + 后台一次补齐；默认关闭时保持命令末尾 flush）；`online-coalesce` 断言适配；大厅 140/140。
 
 #### P2.2 AI 回合与回包解耦（1.5–2 天）
 
@@ -420,6 +428,13 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 **风险**：直连与中转切换时 Promise 悬挂；超时回退一次 status。
 
 **验收**：直连 / 中转切换；4 人测试；无轮询请求。
+
+**状态：已完成（2026-10-24）** ✅
+
+- 实现：`public/p2p.js` 新增 `revisionWaiters`；直连命令拿到 result 后不再每 100 ms 拉 `/online/status`，由 `POST /online/direct-snapshot` 返回的 status 或既有 status 长轮询即时唤醒；快照先于 result 到达时立即 resolve；15 s 超时只兜底拉一次 status，仍失败回退中转。对端断开/重置时 reject 等待者，避免 Promise 悬挂。
+- 诊断：`window.__P2P_STATS__` 记录 waits / resolvedBySnapshot / resolvedByStatus / fallbackStatusFetches / timeouts，浏览器回归据此断言「事件唤醒、零轮询、零兜底」。
+- 门禁：`online.browser.mjs` 直连用例新增统计断言并通过（waits>0、timeouts=0、fallbackStatusFetches=0）；浏览器全套 10/10；大厅 140/140。
+- 说明：harness 走本机 relay，不覆盖直连路径；直连收益用浏览器用例与 `__P2P_STATS__` 验证。
 
 #### P2 出口
 
@@ -524,7 +539,7 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 
 ### 5.4 回滚
 
-- 每项一个 env：`BOARDGAME_ONLINE_BUSY=0`、`..._SLIM_RESPONSE=0`、`..._STATIC=0`、`..._COALESCE=0`、`..._DEFER=0`、`..._AI_BACKGROUND=0`。
+- 每项一个 env：`BOARDGAME_ONLINE_BUSY=0`、`BOARDGAME_ONLINE_SLIM=0`、`BOARDGAME_ONLINE_STATIC=0`、`BOARDGAME_ONLINE_COALESCE=0`、`BOARDGAME_ONLINE_AI_BACKGROUND=0`；P2.1 默认关闭，需要时用 `BOARDGAME_ONLINE_DEFER=1` 打开。
 - 客户端 `?online=legacy` 或 capability 缺失 → 全量路径。
 - 静态表 / 增量任何异常回全量。
 - 协议只增可选字段，旧中转不受影响。
