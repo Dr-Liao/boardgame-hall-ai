@@ -1,6 +1,6 @@
 # 诡镇联机性能优化路线（2026-10 重写）
 
-> 状态：执行中；P0（基线 + 仪表 + harness）已完成（2026-10-23），P1（字节与重复发布，P1.1–P1.5）已完成并达成出口指标（2026-10-24），下一阶段 P2。
+> 状态：执行中；P0（基线 + 仪表 + harness）已完成（2026-10-23），P1（字节与重复发布）、P2（延后与解耦，P2.1–P2.3）已完成并达成出口指标（2026-10-24），下一阶段 P3（可选）。
 > 范围：大厅 + 诡镇 Mod 的**联机热路径**；不含规则引擎优化、卡图加载、单机存档压缩。
 > 基线：2026-10-23 手工实测（4 真人、夜之狂热第一关、revision 100–123）；P0 已用新 harness 复现并冻结，见 §1.6。
 
@@ -413,6 +413,14 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 - 双击不重复跑；
 - 重启恢复。
 
+**状态：已完成（2026-10-24）** ✅
+
+- 实现：人类动作 commit 后写 `session.pendingAi = true` 并全量落盘 → flush「人类动作 + busy=true」快照 → 立即返回 `{ ok, session?, revision, eventCount, aiPending:true, busy:true }`（客人 slim 响应同形）；`runAgentReactions` + `runAiTurns` 整体移入后台 runner（`aiBackgroundSessions` WeakSet 防重入，每个 AI 步骤提交后落盘 + flush，客户端按 `events.seq` 逐步看到）；AI 失败/超时写 `agentError{seat,code,message,retryable}` 事件，finally 一定清 `pendingAi`/busy、落盘并 flush 最终 `busy=false` 快照；`start`/`reset`/`aiRetry` 同样先回包；重启/读档按存档 `pendingAi` 从最新 revision 后台续跑、不重放已完成动作；AI 思考期间 chat 放行、其余命令 409 `SESSION_BUSY`，同名 `operationId` 回放直接返回首次 aiPending 响应且不重复调模型；`BOARDGAME_ONLINE_AI_BACKGROUND=0` 或无模型时保持旧同步路径。
+- 实测（stub 模型，真实模型延迟）：3 s 模型延迟下 move 命令 **22.1 ms** 返回 `aiPending`（旧路径 ≈3000 ms）；AI 先手 `start` 在 2 s 延迟下 **9.9 ms** 返回；回滚开关下同一动作 **727.5 ms**（含 700 ms 模型延迟）。
+- 客户端：`online.status()` 增可选 `aiPending`；banner 显示「AI 思考中…」；命令响应即时置 `state.online.busy=true`（通用棋盘与 Arkham `canAct` 据此禁用行动入口）；客人经快照/status 感知 aiPending、可继续聊天。
+- 门禁：`tests/hall/ai-background.test.mjs` 8/8（含 3 s 延迟、AI 失败 agentError、并发 SESSION_BUSY + 幂等回放、重启恢复、回滚、guest 感知/聊天、banner）；大厅 148/148；浏览器 10/10；Arkham hall-online 7/7。
+- 已知限制：后台 runner 无取消钩子（进程退出靠 `pendingAi` 恢复）；无模型（合法动作兜底）时保持同步路径；中转不传错误码，客人侧 SESSION_BUSY 只能看文案。
+
 #### P2.3 直连命令事件化（0.5–1 天）
 
 **现状**：`p2p.command` 收到 result 后每 100 ms 轮询 `/online/status`，等本地 revision。
@@ -440,6 +448,18 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 - 房主点击 ≤ 120 ms；直连客人 ≤ 300 ms；AI 确认 ≤ 200 ms；房主阻塞 ≤ 80 ms。
 - 4 人 240 步、AI 2 人、断线重连、房主重启全绿。
+
+**状态：已达成（2026-10-24）** ✅
+
+| P2 出口指标 | 目标 | 实测 |
+| --- | --- | --- |
+| 房主点击 / 命令往返 | ≤ 120 ms | harness host 命令往返 86.4 ms（4 人 100 步 p50） |
+| AI 确认（带模型） | ≤ 200 ms | **22.1 ms**（stub 3 s 模型延迟，命令返回 aiPending） |
+| 直连客人命令 | ≤ 300 ms | 浏览器用例：事件化唤醒、零轮询、零兜底；直连快照命中 |
+| 房主事件循环阻塞 | ≤ 80 ms | 50.9 ms（4 人 100 步 p50） |
+
+- 门禁：大厅 148/148、浏览器 10/10、Arkham `hall-online.test.mjs` 7/7（4 人 240 步、AI 队友、断线重连）、`ai-background` 8/8（含房主重启恢复）、`view-privacy` + `architecture-guard` 23/23。
+- 回滚：`BOARDGAME_ONLINE_AI_BACKGROUND=0` 回到「命令等 AI 跑完」；P2.3 直连等待者可超时回退中转；P2.1 `BOARDGAME_ONLINE_DEFER`（默认关闭）。relay 未改、存档始终全量、只增可选字段。
 
 ### P3 深度优化（2–3 天，可选）
 
@@ -499,7 +519,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 | `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 90 ms | ≤ 70 ms | ≤ 60 ms |
 | 4 人命令往返 | 317 ms | ≤ 200 ms | ≤ 120 ms | — |
 
-> 当前进度（P1.5 后，harness 100 步 p50）：4 人命令往返 95 / 118 ms（host / guest）、命令响应 host 215.6 KB / guest 0.1 KB、status 下行 832.4 KB、阻塞 51.1 ms、`publishOnline` 35.5 ms / 2 次每行动 —— **P1 出口指标全部达成**（P2 目标：房主点击 ≤120 ms、AI 确认 ≤200 ms、直连客人 ≤300 ms）。
+> 当前进度（P2 后，harness 100 步 p50）：4 人命令往返 86.4 / 117.4 ms（host / guest）、命令响应 host 215.6 KB / guest 0.1 KB、status 下行 832.4 KB、阻塞 50.9 ms、`publishOnline` 35.9 ms / 2 次每行动；AI 动作在 stub 3 s 模型延迟下 **22.1 ms** 返回 aiPending（AI 完成由后台快照送达）—— **P1、P2 出口指标全部达成**。
 
 ### 5.2 每次提交必须跑
 
@@ -550,7 +570,7 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 | --- | --- | --- | --- |
 | P0 ✅ | harness + 仪表 + 基线（2026-10-23 完成） | 1–1.5 天 | host 命令往返 p50 388 ms、阻塞 241 ms、status 下行 3.7 MB（§1.6） |
 | P1 ✅ | busy / slim / 序列化 / 静态表 / 合并（2026-10-24 完成） | 3–4 天 | 命令响应 host 215.6 KB / guest 0.1 KB；status 下行 832.4 KB；阻塞 51.1 ms；往返 95/118 ms（§P1 出口） |
-| P2 | 延后 / AI 解耦 / p2p 事件 | 2.5–4 天 | 点击 ≤ 120 ms；AI ≤ 200 ms |
+| P2 ✅ | 延后 / AI 解耦 / p2p 事件（2026-10-24 完成） | 2.5–4 天 | AI 确认 22.1 ms（3 s 模型延迟）、host 往返 86.4 ms、阻塞 50.9 ms；直连零轮询（§P2 出口） |
 | P3 | status delta / A1′ / 零拷贝 / 网络 | 2–3 天 | status ≤ 100 KB；relay ≤ 450 ms |
 | P4 | 区域渲染（条件） | 2–3 天 | render p95 ≤ 8 ms |
 
