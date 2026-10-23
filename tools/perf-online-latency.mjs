@@ -30,6 +30,8 @@
 //   commandBytes     该 POST 响应文本的字节数。房主响应仍含完整个人视图；客人默认按 P1.2 浏览器
 //                    口径（body.client.slim）只收摘要，用 --client=legacy 可复现旧客户端的整份响应。
 //   statusBytes      动作结束后房主 GET /api/online/status 的响应字节（浏览器「拉整份状态」的口径）。
+//                    --client=browser 下 harness 会像浏览器一样缓存 staticVersion：首份回全量，
+//                    之后的 status/command 都声明 clientStatic，静态表只收一次（P1.4）。
 //   serialDelta      动作期间「行动席位」自己的 online status serial 变化次数（每次变化浏览器就会拉一次 status）。
 //   statusDownlink   ≈ statusBytes × max(serialDelta + 1, 1)。为什么这样折算：online-ui 在收到每次 serial
 //                    变化时拉一次 status（serialDelta 次），命令结束后还会显式 refresh() 一次（+1）；
@@ -85,8 +87,9 @@ const USAGE = `联机延迟基准（同进程多厅 + 本机 relay）
   --ai=0|2           预留后 N 个 AI 席位（合法动作兜底，不联网；默认 0）
   --seed=perf        Arkham 对局种子
   --status=host      动作后测哪些大厅的 status 响应：host|all|none（默认 host）
-  --client=browser   客人命令是否声明 client.slim：browser=真实浏览器口径（默认，客人只收摘要）；
-                     legacy=旧客户端口径（客人响应带整份会话，用于和 P1.2 之前的基线对比）
+  --client=browser   客户端能力口径：browser=真实浏览器（默认；客人命令带 client.slim，浏览器缓存
+                     静态表后 status/命令带 clientStatic/staticVersion，P1.4）；legacy=旧客户端
+                     （无 slim、无静态表缓存，用于和 P1.2/P1.4 之前的基线对比）
   --json=<file>      把完整结果 JSON 写到文件（默认不写）
   --baseline=<file>  文件不存在：写本次结果为基线；存在：比较并检测回归（exit 1）
   --compare=<file>   读取另一份运行 JSON 并排对照（不影响退出码）
@@ -295,14 +298,26 @@ function createHall(server, origin, guest = false) {
     server,
     origin,
     guest,
-    call: (route, body, timeoutMs = STATUS_TIMEOUT_MS) => request(hall, route, body, timeoutMs),
+    // 浏览器侧静态表缓存版本（P1.4）：首次 status/命令回全量后记下 staticVersion，
+    // 之后的请求都声明这个版本，服务器才省略两张公共表。
+    staticVersion: null,
+    call: (route, body, timeoutMs = STATUS_TIMEOUT_MS) => {
+      let finalRoute = route
+      if (options.client === 'browser' && hall.staticVersion && route.startsWith('status')) {
+        finalRoute = route + (route.includes('?') ? '&' : '?') + 'clientStatic=' + encodeURIComponent(hall.staticVersion)
+      }
+      return request(hall, finalRoute, body, timeoutMs)
+    },
     // 联机命令统一带 operationId（大厅用它做幂等）。
     // P1.2 起浏览器客人用 body.client.slim 声明只要摘要；--client=legacy 保留旧客户端口径。
+    // P1.4：浏览器把已知 staticVersion 放进 body.client，服务器据此省略静态表。
     command: (action, body = {}, timeoutMs = COMMAND_TIMEOUT_MS) => request(hall, 'command', {
       action,
       body: {
         operationId: randomUUID(),
-        ...(guest && options.client === 'browser' ? { client: { slim: true } } : {}),
+        ...(options.client === 'browser'
+          ? { client: { ...(guest ? { slim: true } : {}), ...(hall.staticVersion ? { staticVersion: hall.staticVersion } : {}) } }
+          : {}),
         ...body,
       },
     }, timeoutMs),
@@ -310,10 +325,17 @@ function createHall(server, origin, guest = false) {
   return hall
 }
 
+// 从 status / 命令响应里记住当前 hall 视角的 staticVersion（浏览器缓存的等价物）。
+function noteStaticVersion(hall, json) {
+  const version = json?.session?.staticVersion ?? json?.staticVersion
+  if (typeof version === 'string' && version) hall.staticVersion = version
+}
+
 async function readStatus(hall) {
   const response = await hall.call('status')
   let json
   try { json = JSON.parse(response.text) } catch { throw new Error(`status 响应不是合法 JSON（${response.httpStatus}）`) }
+  noteStaticVersion(hall, json)
   return { bytes: response.bytes, ms: response.ms, json }
 }
 
