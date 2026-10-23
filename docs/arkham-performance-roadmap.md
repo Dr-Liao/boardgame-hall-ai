@@ -1,6 +1,6 @@
 # 诡镇联机性能优化路线（2026-10 重写）
 
-> 状态：执行中；P0（基线 + 仪表 + harness）已完成（2026-10-23），下一阶段 P1。
+> 状态：执行中；P0（基线 + 仪表 + harness）已完成（2026-10-23），P1（字节与重复发布，P1.1–P1.5）已完成并达成出口指标（2026-10-24），下一阶段 P2。
 > 范围：大厅 + 诡镇 Mod 的**联机热路径**；不含规则引擎优化、卡图加载、单机存档压缩。
 > 基线：2026-10-23 手工实测（4 真人、夜之狂热第一关、revision 100–123）；P0 已用新 harness 复现并冻结，见 §1.6。
 
@@ -209,7 +209,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 > 目标：单次命令 ≤ 300 KB，每次行动 status 总下行 ≤ 1.1 MB，房主阻塞 ≤ 150 ms。
 > 这一阶段不改延迟语义（仍然等 AI），只砍数据面。
-> **进度（2026-10-23）**：P1.1 ✅、P1.2 ✅、P1.3 ✅、P1.4 ✅；P1.5 待做（发布次数合并 + AI 连发）。当前 100 步 p50（P1.4 后）：host 命令往返 95 ms、guest 120 ms、host 命令响应 215.6 KB / guest 0.1 KB、status 响应 277.5 KB、status 下行 832.4 KB、阻塞 83.6 ms、`publishOnline` 45.8 ms —— **P1 出口的字节 / 阻塞 / 往返指标已全部达标**。
+> **进度（2026-10-24）**：P1.1 ✅、P1.2 ✅、P1.3 ✅、P1.4 ✅、P1.5 ✅ —— **P1 完成并达成全部出口指标**（见本节末「P1 出口」）。最终 100 步 p50（P1.5 后）：host 命令往返 95 ms、guest 118 ms、host 命令响应 215.6 KB / guest 0.1 KB、status 响应 277.5 KB、status 下行 832.4 KB、阻塞 51.1 ms、`publishOnline` 35.5 ms / 2 次每行动。
 
 #### P1.1 busy 轻量消息（0.5 天）
 
@@ -335,11 +335,31 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 
 **验收**：4 人 240 步；AI 2 人局动作不丢；`publishOnline` 计数断言。
 
+**状态：已完成（2026-10-24）** ✅
+
+- 实现：`lib/server.js` 新增 `schedulePublish()` / `flushPublish()`；`snapshotSession` 的在线发布只标脏，命令边界（`onlineCommandImpl` 外层）在成功/失败返回前统一 flush「flush 时的最新状态」；命令开始用 P1.1 轻量 status 同步 busy=true；`onRoom` 房间广播、`sync`、直连订阅保持立即发布；`BOARDGAME_ONLINE_COALESCE=0` 回滚到每次快照立即发布。`lib/online.js` 无改动、无 wire 变化。
+- 实测（同机 harness）：100 步 publishCount **3 → 2**、`publishMs` **45.8 → 35.5 ms**、事件循环阻塞 **83.6 → 51.1 ms**，命令往返/字节/status 逐项不变；`--ai=2` 20 步 publish 次数 **3.6 → 2.0 次/动作（max 9 → 2）**、`publishMs` 21.0 → 8.4 ms。
+- 验证：`tests/hall/online-coalesce.test.mjs` 5 例（一次行动只发一次最终快照、回滚、房间广播立即发布、AI 连续动作 events/seq 完整且发布数不随步数增长、1 人类+1 AI 只发一份）；大厅 138/138、浏览器 10/10、Arkham hall-online 7/7。
+- 已知取舍：真实模型 AI 回合（每步数秒）期间客户端只收到 busy status，回合结束按最终快照里累积的 `events.seq` 一次性回放；P2.2 会把 AI 回包解耦后再优化演出粒度。
+
 #### P1 出口
 
 - 命令响应 ≤ 300 KB；每次行动 status 总下行 ≤ 1.1 MB；房主阻塞 ≤ 150 ms；4 人命令往返 ≤ 200 ms。
 - `test:hall`、`test:fast`、4 人联机、`view-privacy`、浏览器回归全绿。
 - 视图哈希（hydration 后）不变；静态表相关的 wire 变化有独立 fixture。
+
+**状态：已达成（2026-10-24，harness 100 步 p50）** ✅
+
+| P1 出口指标 | 目标 | 实测 |
+| --- | --- | --- |
+| 单次命令响应 | ≤ 300 KB（房主）/ ≤ 1 KB（客人） | 215.6 KB / 0.1 KB |
+| 每次行动 status 总下行 | ≤ 1.1 MB | 832.4 KB |
+| 房主事件循环阻塞 | ≤ 150 ms | 51.1 ms |
+| 4 人命令往返 | ≤ 200 ms | 95 ms（host）/ 118 ms（guest） |
+
+- 门禁：大厅 `node --test tests/hall/*.test.mjs` **138/138**；大厅浏览器回归 **10/10**（含静态表 hydrate/刷新、直连 P2P）；Arkham `hall-online.test.mjs` **7/7**；`view-privacy` + `architecture-guard` **23/23**；Arkham `view-static` + `hall-static` 全绿；hydration 逐字节一致。
+- 既有失败（与 P1 无关，属 Arkham 仓库当前提交状态）：`tcu-migration`/`tcu-rules` 缺 `artifacts/migration/tcu/*.json` 生成产物、`capture-view-hashes` 基线未更新、`hall-online.browser.mjs` 的 mulligan 用例在清理前基线同样失败。
+- 回滚开关（每项独立）：`BOARDGAME_ONLINE_BUSY/SLIM/STATIC/COALESCE=0`、`?perf` / capability 缺失 → 全量路径；relay 未改；存档始终全量。
 
 ### P2 延后与解耦（2.5–4 天）
 
@@ -464,7 +484,7 @@ node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/baseline
 | `publishOnline`（4 席 / 250 步） | 123–130 ms | ≤ 90 ms | ≤ 70 ms | ≤ 60 ms |
 | 4 人命令往返 | 317 ms | ≤ 200 ms | ≤ 120 ms | — |
 
-> 当前进度（P1.4 后，harness 100 步 p50）：4 人命令往返 95 / 120 ms（host / guest）、命令响应 host 215.6 KB / guest 0.1 KB、status 下行 832.4 KB、阻塞 83.6 ms、`publishOnline` 45.8 ms —— P1 出口指标全部达标；P1.5 只负责把「一次行动 publish 次数 3」继续合并（主要收益在 AI 连续行动）。
+> 当前进度（P1.5 后，harness 100 步 p50）：4 人命令往返 95 / 118 ms（host / guest）、命令响应 host 215.6 KB / guest 0.1 KB、status 下行 832.4 KB、阻塞 51.1 ms、`publishOnline` 35.5 ms / 2 次每行动 —— **P1 出口指标全部达成**（P2 目标：房主点击 ≤120 ms、AI 确认 ≤200 ms、直连客人 ≤300 ms）。
 
 ### 5.2 每次提交必须跑
 
@@ -514,7 +534,7 @@ node node_modules/@playwright/test/cli.js test --config games/arkhamhorror/playw
 | 阶段 | 内容 | 工作量 | 出口指标 |
 | --- | --- | --- | --- |
 | P0 ✅ | harness + 仪表 + 基线（2026-10-23 完成） | 1–1.5 天 | host 命令往返 p50 388 ms、阻塞 241 ms、status 下行 3.7 MB（§1.6） |
-| P1 | busy / slim / 序列化 / 静态表 / 合并 | 3–4 天 | 命令 ≤ 300 KB；阻塞 ≤ 150 ms |
+| P1 ✅ | busy / slim / 序列化 / 静态表 / 合并（2026-10-24 完成） | 3–4 天 | 命令响应 host 215.6 KB / guest 0.1 KB；status 下行 832.4 KB；阻塞 51.1 ms；往返 95/118 ms（§P1 出口） |
 | P2 | 延后 / AI 解耦 / p2p 事件 | 2.5–4 天 | 点击 ≤ 120 ms；AI ≤ 200 ms |
 | P3 | status delta / A1′ / 零拷贝 / 网络 | 2–3 天 | status ≤ 100 KB；relay ≤ 450 ms |
 | P4 | 区域渲染（条件） | 2–3 天 | render p95 ≤ 8 ms |
