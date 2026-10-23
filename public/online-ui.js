@@ -59,10 +59,15 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     if (!relayUrl && value.relayUrl) setAddress(value.relayUrl)
     if (value.room) {
       state.setup = null
+      // P3.1：服务器确认「本地已是同一份会话」（sessionOmitted）时只更新 busy/lobby 等在线字段，
+      // 不重建会话、不触发 loadGame；慢请求回滚的保护由上面的 serial 判断负责。
+      const sessionOmitted = value.sessionOmitted === true && !!state.session
       // P1.4：应用会话前先 hydrate 公共静态表；本地没有匹配版本时保留当前完整视图，
       // 等大厅在后续响应里补发 static（失败模式只会是「慢一拍」，不会把精简会话当完整视图渲染）。
       const nextSession = value.session ? (hydrate ? hydrate(value.session) : value.session) : null
-      if (value.session && !nextSession) {
+      if (sessionOmitted) {
+        changed ||= appliedSerial !== value.serial
+      } else if (value.session && !nextSession) {
         // 等静态表；本次不应用这份精简会话。
       } else if (nextSession && !state.busy && !(state.chat.pendings || []).length) {
         // Busy actions defer applying snapshots, not just rendering them.
@@ -71,7 +76,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
         state.session = nextSession; state.view = 'game'
         appliedSerial = value.serial
         loadGame(state.catalog.find(g => g.id === nextSession.modId))
-      } else if (!value.session) { state.session = null; state.view = 'room' }
+      } else if (!value.session && !sessionOmitted) { state.session = null; state.view = 'room' }
     } else if (wasOnline) { state.session = null; state.view = 'library'; state.error = value.error || null; appliedSerial = -1 }
     const lifecycle = previousInstance !== instanceId || !!previousOnline?.room !== !!state.online?.room
       || previousSession?.sessionId !== state.session?.sessionId || previousView !== state.view

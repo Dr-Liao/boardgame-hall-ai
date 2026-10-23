@@ -6,6 +6,7 @@ import { chatCompletionContext, chatFilterOptions, chatMessageKey } from './chat
 import { createOnlineUI } from './online-ui.js'
 import { createUpdatesUI } from './updates-ui.js'
 import { createFeedbackUI } from './feedback-ui.js'
+import { applyStatusDelta, statusStampOf } from './online-delta.js'
 
 const root = document.getElementById('app')
 const query = new URLSearchParams(location.search)
@@ -151,6 +152,11 @@ async function rawApi(method, pathname, body) {
     const version = currentStaticVersion()
     const separator = pathname.includes('?') ? '&' : '?'
     requestPath = pathname + separator + 'clientStatic=' + encodeURIComponent(version)
+    // P3.1：status 请求声明本地会话的 stamp，命中服务器基线时只回 sessionDelta / sessionOmitted。
+    if (method === 'GET' && pathname.startsWith('/online/status')) {
+      const baseStamp = currentStatusStamp()
+      if (baseStamp) requestPath += '&baseStamp=' + encodeURIComponent(baseStamp)
+    }
     if (method === 'POST' && pathname === '/online/command' && body && typeof body === 'object' && body.body && typeof body.body === 'object') {
       requestBody = { ...body, body: { ...body.body, client: { ...(body.body.client || {}), staticVersion: version } } }
     }
@@ -170,7 +176,11 @@ async function rawApi(method, pathname, body) {
       bytes: responseBytes(responseText, res.headers.get('content-length')) })
   }
   // P1.4：把 static 信封记进本地缓存，并让所有调用方（accept / 直连命令 / p2p 轮询）都拿到 hydrate 后的会话。
-  if (onlineRequest) hydrateOnlinePayload(data)
+  // P3.1：先应用 status 增量（baseStamp 命中时），再走静态表 hydration。
+  if (onlineRequest) {
+    applyOnlineStatusDelta(data)
+    hydrateOnlinePayload(data)
+  }
   if (!data || data.ok !== true) {
     const error = new Error(data?.error || ('HTTP ' + res.status))
     Object.assign(error, { status: res.status, code: data?.code, session: data?.session, revision: data?.revision })
@@ -333,6 +343,22 @@ function hydrateOnlinePayload(payload) {
     if (hydrated) payload.session = hydrated
   }
   return payload
+}
+
+// P3.1：status 增量。状态里的会话来自 state.online.session（上一次 status 的 wire 视图）；
+// 基线不符/应用失败就丢弃本次增量，等下一次全量（失败模式只会多一次全量）。
+function currentStatusStamp() {
+  return statusStampOf(state.online?.session)
+}
+
+function applyOnlineStatusDelta(payload) {
+  if (!payload || typeof payload !== 'object') return false
+  const applied = applyStatusDelta(state.online?.session, payload)
+  if (!applied) return false
+  payload.session = applied.session
+  payload.stamp = applied.stamp
+  delete payload.sessionDelta
+  return true
 }
 
 const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi, perf,

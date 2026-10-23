@@ -67,11 +67,16 @@ test('静态表 hydrate 后联机棋局正常渲染，客人刷新由 guest 大�
   await expect(host.locator('.bg-cell-white')).toHaveCount(1)
 
   // P1.4 wire 证据：首份 status 带 static 信封（fixture-static 公共表约 36KB），命中版本后的 status 很小。
+  // P3.1 追加：首份大响应之后的 status 走 sessionOmitted/sessionDelta，应小到 2KB 以内。
   const statusBytes = await guest.evaluate(() => window.__ONLINE_PERF__.requests
     .filter(request => request.path.startsWith('/online/status')).map(request => request.bytes))
   expect(statusBytes.length).toBeGreaterThan(1)
   expect(Math.max(...statusBytes)).toBeGreaterThan(25 * 1024)
   expect(Math.min(...statusBytes)).toBeLessThan(8 * 1024)
+  const firstBig = statusBytes.indexOf(Math.max(...statusBytes))
+  const afterBig = statusBytes.slice(firstBig + 1)
+  expect(afterBig.length).toBeGreaterThan(0)
+  expect(Math.min(...afterBig)).toBeLessThan(2 * 1024)
 
   // 浏览器刷新会丢掉内存里的静态表：由 guest 大厅缓存补发后必须仍完整渲染同一棋局。
   await guest.reload()
