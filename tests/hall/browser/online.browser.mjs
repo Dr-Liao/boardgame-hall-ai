@@ -81,7 +81,8 @@ test('browser peers exchange moves and snapshots directly, then fall back when a
   await api(1, 'join', { relayUrl, code: created.room.code }); await api(1, 'ready', { ready: true })
   const host = await browser.newPage(), guest = await browser.newPage(), errors = []
   for (const page of [host, guest]) page.on('pageerror', error => errors.push(error.message))
-  await host.goto(halls[0].url); await guest.goto(halls[1].url)
+  // ?perf=1：读取直连命令的浏览器侧耗时（P2/P3 直连出口口径）。
+  await host.goto(halls[0].url + '?perf=1'); await guest.goto(halls[1].url + '?perf=1')
   await expect(guest.locator('.bg-online-banner')).toContainText('直连', { timeout: 30000 })
   await expect(host.locator('.bg-online-banner')).toContainText('直连 1 人')
   const started = await command(0, 'start')
@@ -95,9 +96,15 @@ test('browser peers exchange moves and snapshots directly, then fall back when a
   // P2.3：直连命令等待本地 revision 由快照/长轮询事件唤醒，不再每 100ms 轮询 /online/status。
   const p2pStats = await guest.evaluate(() => window.__P2P_STATS__ || null)
   expect(p2pStats).toBeTruthy()
-  expect(p2pStats.waits).toBeGreaterThan(0)
+  expect(p2pStats.waits + p2pStats.resolvedImmediately).toBeGreaterThan(0)
   expect(p2pStats.timeouts).toBe(0)
   expect(p2pStats.fallbackStatusFetches).toBe(0)
+  // P1.2/P3：直连命令回包应是 slim 摘要，命令结果里不再携带整份视图。
+  const directCommands = await guest.evaluate(() => (window.__ONLINE_PERF__?.commands || [])
+    .filter(command => command.transport === 'direct'))
+  expect(directCommands.length, JSON.stringify(directCommands)).toBeGreaterThan(0)
+  expect(Math.max(...directCommands.map(command => command.ms))).toBeLessThan(300)
+  console.log('[direct] 浏览器侧直连命令耗时(ms):', directCommands.map(command => command.ms).join(','))
   expect(halls[0].server.online.metrics.directBytes).toBeGreaterThan(before.directBytes)
   expect(halls[0].server.online.metrics.sentBytes).toBe(before.sentBytes, 'game snapshots should bypass the relay while directly connected')
   await host.close()

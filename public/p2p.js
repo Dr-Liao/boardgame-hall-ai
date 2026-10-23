@@ -12,7 +12,7 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
   // 直连快照（receive → direct-snapshot 返回的 status）或既有 status 长轮询唤醒。
   const revisionWaiters = new Map()
   let waiterSeq = 0
-  const stats = { waits: 0, resolvedBySnapshot: 0, resolvedByStatus: 0, fallbackStatusFetches: 0, timeouts: 0 }
+  const stats = { waits: 0, resolvedImmediately: 0, resolvedBySnapshot: 0, resolvedByStatus: 0, fallbackStatusFetches: 0, timeouts: 0 }
   // 诊断口径（浏览器用例断言「无轮询、由快照解析」用），不影响业务逻辑。
   globalThis.__P2P_STATS__ = stats
   const own = () => current?.room?.members?.find(member => member.id === current.memberId)
@@ -22,6 +22,17 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
   const sameSession = (session, target) => !!session && session.sessionId === target.sessionId
     && (session.state?.revision ?? -1) >= target.revision
     && (session.events?.length ?? 0) >= target.eventCount
+  // 直连命令的结果有两种形状：P1.2 瘦身摘要（sessionId/revision/eventCount 在顶层）或旧的全量
+  // 结果（只有 session）。等待目标统一从两者归一化出来；两个字段都没有时返回 null（不等）。
+  function waitTarget(result) {
+    const session = result?.session
+    const target = {
+      sessionId: result?.sessionId ?? session?.sessionId,
+      revision: result?.revision ?? session?.state?.revision,
+      eventCount: result?.eventCount ?? (Array.isArray(session?.events) ? session.events.length : undefined),
+    }
+    return target.sessionId && Number.isInteger(target.revision) && Number.isInteger(target.eventCount) ? target : null
+  }
   // 用最新 status（直连快照落本地后的返回，或既有 /online/status 长轮询）唤醒等待者。
   function settleWaiters(status, source) {
     if (!status?.session || !revisionWaiters.size) return
@@ -34,7 +45,8 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
     }
   }
   function waitForRevision(target, peer) {
-    if (sameSession(current?.session, target)) return Promise.resolve(current.session)
+    if (!target) { stats.resolvedImmediately++; return Promise.resolve(current?.session ?? null) }
+    if (sameSession(current?.session, target)) { stats.resolvedImmediately++; return Promise.resolve(current.session) }
     stats.waits++
     return new Promise((resolve, reject) => {
       const id = ++waiterSeq
@@ -288,19 +300,24 @@ export function createP2P({ request, onChange = () => {}, perf = null }) {
   function command(action, body) {
     const peer = peers.get(host()?.id)
     if (!active(peer) || !peer.ready) return Promise.reject(Object.assign(new Error('直连不可用'), { transport: true }))
+    // P1.2/P3：直连命令也声明 slim——房主只回 {sessionId,revision,eventCount,busy} 摘要，
+    // 不再经 DataChannel 回传整份个人视图（本地状态由随后的直连快照更新）。
+    const outbound = body && typeof body === 'object'
+      ? { ...body, client: { ...(body.client || {}), slim: true } }
+      : body
     // ?perf=1 时记录直连命令的总耗时（含等待本地 revision）；未注入 recorder 时行为与原来完全一致。
     const perfStarted = perf ? performance.now() : 0
     const result = new Promise((resolve, reject) => {
       const id = crypto.randomUUID()
       const timer = setTimeout(() => { pending.delete(id); closePeer(peer); reject(Object.assign(new Error('直连操作超时'), { transport: true })) }, 180000)
       pending.set(id, { peer, resolve, reject, timer })
-      send(peer, { type: 'command', id, action, body }).catch(error => {
+      send(peer, { type: 'command', id, action, body: outbound }).catch(error => {
         if (pending.delete(id)) { clearTimeout(timer); reject(Object.assign(error, { transport: true })) }
       })
     }).then(async result => {
       // P2.3：事件化等待本地 revision——快照先到就在这里立即 resolve，不再每 100ms 轮询 status。
       try {
-        const session = await waitForRevision(result, peer)
+        const session = await waitForRevision(waitTarget(result), peer)
         return { ...result, session }
       } catch (error) {
         closePeer(peer)
