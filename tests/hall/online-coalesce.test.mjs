@@ -145,9 +145,11 @@ test('一次行动只 flush 一次最终快照 + 一次 busy status，客人最�
   const records = perf.recordsSince(from).records
   const publishes = publishRecords(records)
 
-  assert.ok(publishes.length <= 2, `一次行动最多两次 publishOnline（busy status + 最终 flush），实际 ${publishes.length}`)
-  assert.equal(publishes.filter(entry => entry.published > 0).length, 1,
-    '有且只有一次 published>0：最终快照只发一次')
+  // P2.1 后：busy status + 行动者同步发布 + 其他席位后台发布，最多 3 次 publishOnline。
+  assert.ok(publishes.length <= 3, `一次行动最多三次 publishOnline（busy status + 行动者 + 后台补齐），实际 ${publishes.length}`)
+  assert.ok(publishes.filter(entry => entry.published > 0).length <= 2,
+    '行动者与其余席位各发一次，不应重复发送同一份最终快照')
+  assert.ok(publishes.filter(entry => entry.published > 0).length >= 1, '最终快照至少发一次')
   assert.ok(publishes.some(entry => entry.statusSent > 0 && entry.published === 0),
     'busy 变化仍走 P1.1 的轻量 status，不重发整份会话')
   const memberSends = records.filter(entry => entry.event === 'publish.member')
@@ -300,7 +302,7 @@ test('1 人类 + 1 AI 的两人房：host 一次行动后 AI 动作随最终快�
   const moves = view.events.filter(event => event.type === 'move')
   assert.deepEqual(moves.map(event => event.seat), [0, 1], '人类行动与 AI 兜底动作事件都应保留')
   assert.deepEqual(view.events.map(event => event.seq), view.events.map((_, index) => index))
-  assert.ok(publishes.length <= 2, `一次行动最多两次 publishOnline，实际 ${publishes.length}`)
+  assert.ok(publishes.length <= 3, `一次行动最多三次 publishOnline（含 P2.1 后台补齐），实际 ${publishes.length}`)
   assert.equal(publishes.filter(entry => entry.published > 0).length, 1, '最终快照只发一次')
   assert.equal(records.filter(entry => entry.event === 'publish.member').length, 0,
     '房间里没有远程成员时不应产生整份会话下发')
