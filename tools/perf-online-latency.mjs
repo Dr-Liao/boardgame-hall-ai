@@ -65,6 +65,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+// P3.1：status 增量还原（纯函数、无副作用，可安全静态 import）。
+import { applySnapshotChanges } from '../lib/online-sync.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const MOD_ID = 'arkhamhorror'
@@ -304,10 +306,17 @@ function createHall(server, origin, guest = false) {
     // 浏览器侧静态表缓存版本（P1.4）：首次 status/命令回全量后记下 staticVersion，
     // 之后的请求都声明这个版本，服务器才省略两张公共表。
     staticVersion: null,
+    // P3.1：浏览器侧 status 增量基线（上一次收到的会话视图 + stamp）。
+    statusView: null,
+    statusStamp: '',
     call: (route, body, timeoutMs = STATUS_TIMEOUT_MS) => {
       let finalRoute = route
-      if (options.client === 'browser' && hall.staticVersion && route.startsWith('status')) {
-        finalRoute = route + (route.includes('?') ? '&' : '?') + 'clientStatic=' + encodeURIComponent(hall.staticVersion)
+      if (options.client === 'browser' && route.startsWith('status')) {
+        const separator = route.includes('?') ? '&' : '?'
+        if (hall.staticVersion) finalRoute = finalRoute + separator + 'clientStatic=' + encodeURIComponent(hall.staticVersion)
+        if (hall.statusStamp) {
+          finalRoute = finalRoute + (finalRoute.includes('?') ? '&' : '?') + 'baseStamp=' + encodeURIComponent(hall.statusStamp)
+        }
       }
       return request(hall, finalRoute, body, timeoutMs)
     },
@@ -338,7 +347,24 @@ async function readStatus(hall) {
   const response = await hall.call('status')
   let json
   try { json = JSON.parse(response.text) } catch { throw new Error(`status 响应不是合法 JSON（${response.httpStatus}）`) }
+  // P3.1：像浏览器一样把 sessionDelta 应用到上一份视图；sessionOmitted 表示内容未变。
+  if (json.sessionDelta) {
+    try {
+      if (!hall.statusView) throw new Error('缺少本地基线')
+      json.session = applySnapshotChanges(hall.statusView, json.sessionDelta.changes)
+    } catch {
+      json.session = undefined  // 交给调用方重试：下一次请求会因基线不符拿到全量
+    }
+    delete json.sessionDelta
+  } else if (json.sessionOmitted) {
+    json.session = hall.statusView || undefined
+    delete json.sessionOmitted
+  }
   noteStaticVersion(hall, json)
+  if (json.session) {
+    hall.statusView = json.session
+    hall.statusStamp = typeof json.stamp === 'string' ? json.stamp : ''
+  }
   return { bytes: response.bytes, ms: response.ms, json }
 }
 
@@ -1214,6 +1240,7 @@ function buildRunData({ options, humans, aiSeats, summary, actions, failedAction
       seed: options.seed,
       statusMode: options.status,
       client: options.client,
+      statusDelta: options.client === 'browser',
       relay: 'in-process',
       relayUrl: 'http://127.0.0.1:<random-port>',
       keepHome: options.keepHome,
