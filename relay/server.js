@@ -149,7 +149,7 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
             if (message.phase === 'starting' && [...room.members.values()].some(m => !m.socket || (room.phase === 'waiting' && !m.ready))) fail('请等待所有玩家上线并准备')
             room.phase = message.phase
           } else if (message.type === 'request') {
-            if (!['start', 'move', 'reset', 'chat', 'sync', 'aiRetry', 'save'].includes(message.action)) fail('不支持的房间操作')
+            if (!['start', 'move', 'reset', 'chat', 'sync', 'aiRetry', 'save', 'prefs'].includes(message.action)) fail('不支持的房间操作')
             const host = [...room.members.values()].find(m => m.host)
             if (!host?.socket) fail('房主已离线，正在等待重连')
             if ([...pending.values()].filter(p => p.socket === socket).length >= 8) fail('请等待上一操作完成')
