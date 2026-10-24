@@ -1,0 +1,83 @@
+{
+  "tier": "slow",
+  "serial": false,
+  "generatedAt": "2026-10-24T07:25:52.783Z",
+  "wallSeconds": 64.43,
+  "exit": 1,
+  "tests": 344,
+  "failFiles": 1,
+  "files": [
+    {
+      "file": "hall-online.test.mjs",
+      "seconds": 64.07,
+      "tests": 7
+    },
+    {
+      "file": "replay-fuzz.test.mjs",
+      "seconds": 26.89,
+      "tests": 1
+    },
+    {
+      "file": "replay-fuzz-walker.test.mjs",
+      "seconds": 18.54,
+      "tests": 1
+    },
+    {
+      "file": "dunwich-rules.test.mjs",
+      "seconds": 10.69,
+      "tests": 145
+    },
+    {
+      "file": "decision-invariants.test.mjs",
+      "seconds": 10.2,
+      "tests": 16
+    },
+    {
+      "file": "campaign-n4-purchase-stress.test.mjs",
+      "seconds": 9.76,
+      "tests": 1
+    },
+    {
+      "file": "p2-hub-http.test.mjs",
+      "seconds": 9.42,
+      "tests": 2
+    },
+    {
+      "file": "notz-n4.test.mjs",
+      "seconds": 9.39,
+      "tests": 15
+    },
+    {
+      "file": "dunwich-player-acceptance.test.mjs",
+      "seconds": 9.08,
+      "tests": 112
+    },
+    {
+      "file": "core-final-acceptance.test.mjs",
+      "seconds": 5.7,
+      "tests": 12
+    },
+    {
+      "file": "campaign-n4-matrix.test.mjs",
+      "seconds": 4.31,
+      "tests": 3
+    },
+    {
+      "file": "campaign-n4.test.mjs",
+      "seconds": 3.52,
+      "tests": 16
+    },
+    {
+      "file": "save-migration.test.mjs",
+      "seconds": 3.5,
+      "tests": 12
+    },
+    {
+      "file": "suite-manifest.test.mjs",
+      "seconds": 0.02,
+      "tests": 1
+    }
+  ],
+  "sumFileSeconds": 185.09,
+  "parallelism": 2.9
+}

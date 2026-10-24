@@ -1,0 +1,24 @@
+﻿
+tier=slow  wall=64.43s  tests=344 failFiles=1  exit=1
+文件合计=185.09s  平均并行度≈2.9x（14 个文件）
+
+   文件                                     实测(s)
+  hall-online.test.mjs                        64.07
+  replay-fuzz.test.mjs                        26.89
+  replay-fuzz-walker.test.mjs                 18.54
+  dunwich-rules.test.mjs                      10.69
+  decision-invariants.test.mjs                 10.2
+  campaign-n4-purchase-stress.test.mjs         9.76
+  p2-hub-http.test.mjs                         9.42
+  notz-n4.test.mjs                             9.39
+  dunwich-player-acceptance.test.mjs           9.08
+  core-final-acceptance.test.mjs                5.7
+  campaign-n4-matrix.test.mjs                  4.31
+  campaign-n4.test.mjs                         3.52
+
+失败文件：
+  - campaign-n4.test.mjs
+
+（只显示前 12 个文件；去掉 --top 看完整列表）
+
+JSON: G:\boardgame-hall-ai\.test-audit\timings-slow-p1b.json

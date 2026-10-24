@@ -38,13 +38,21 @@ npm install        # 同时安装大厅与 games/* 下各 Mod 的依赖（npm wo
 
 默认地址是 `http://127.0.0.1:8787`，可用环境变量 `BOARDGAME_PORT` 修改。
 
-在「⚙️ 设置 → 👤 玩家」中可修改玩家名称和头像（最大 10MB，自动裁剪为 256px 方形）。新开的对局会使用新资料，已有存档保留原样。
+在「⚙️ 设置 → 玩家」中可修改玩家名称和头像（最大 10MB，自动裁剪为 256px 方形）。新开的对局会使用新资料，已有存档保留原样。
+
+### 界面语言
+
+「⚙️ 设置 → 语言」可在简体中文 / English 之间切换：立即生效，写入 `<DSH_HOME 或 ~/.dsh>/boardgame-hall/settings.json`，刷新或重启后保留。
+
+- 大厅目录、开局表单、设置、联机与更新界面都跟随大厅语言；游戏界面通过 `host.locale` 拿到同一语言。
+- 每个游戏自带自己的语言包；游戏没有当前语言时回退到它自己声明的默认语言，某条文案缺失时逐字段回退，不出现空白。
+- v1 大厅支持简体中文与英文；新增语言与 Mod 侧契约见 [大厅与游戏本地化](docs/localization.md)。
 
 ### 配置大模型
 
 AI 通过 **OpenAI 兼容的 `/chat/completions` 接口**调用模型，支持 OpenAI、DeepSeek、Ollama 等。三种配置方式任选其一：
 
-1. **大厅网页**（最简单）：「⚙️ 设置 → 🔌 模型连接」中填写 API 地址、密钥和模型，可测试连接、拉取模型列表；「高级参数」里可调整其余选项。保存后写入 `boardgame.config.json`。
+1. **大厅网页**（最简单）：「⚙️ 设置 → AI → 模型连接」中填写 API 地址、密钥和模型，可测试连接、拉取模型列表；「高级参数」里可调整其余选项。保存后写入 `boardgame.config.json`。
 2. **配置文件**：复制 `boardgame.config.example.json` 为 `boardgame.config.json`，至少填写：
    ```json
    {
@@ -103,7 +111,7 @@ Windows 首次运行可能提示「打开文件 - 安全警告」并显示「未
 
 ### 自动更新与游戏商店
 
-大厅和每个游戏各自在 GitHub Release 上发版。大厅启动后以及之后每 6 小时检查一次新版本，大厅更新在「⚙️ 设置 → 🔄 大厅更新」中操作，游戏的安装与更新在大厅的「🎮 游戏中心」弹窗中操作：
+大厅和每个游戏各自在 GitHub Release 上发版。大厅启动后以及之后每 6 小时检查一次新版本，大厅更新在「⚙️ 设置 → 大厅更新」中操作，游戏的安装与更新在大厅的「🎮 游戏中心」弹窗中操作：
 
 - **更新大厅**：新版本下载到 `app-<版本>/` 旁路目录，重启后切换。新版本启动失败时，启动器会自动回滚到上一版本。
 - **安装或更新游戏**：游戏下载到 `user-data/boardgame-hall/mods/<id>/<版本>/`。新游戏装完立即可玩，已加载游戏的新版本在重启后生效。
@@ -120,7 +128,7 @@ Windows 首次运行可能提示「打开文件 - 安全警告」并显示「未
 
 AI 角色的核心是 `persona`（人设），这段文本会原样注入 system prompt，决定 AI 怎么行动、说什么话。默认内置《蔚蓝档案》的 5 位角色（花冈柚子、才羽桃、才羽绿、天童爱丽丝、天童凯伊），详见 [角色设定说明](docs/ai-personas.md)。
 
-在「⚙️ 设置 → AI 列表」中可编辑人设和头像（emoji 或图片）。重启时，未改动过的默认角色会自动更新，自己编辑或新建的角色会保留。
+在「⚙️ 设置 → AI → AI 角色」中可编辑人设和头像（emoji 或图片）。重启时，未改动过的默认角色会自动更新，自己编辑或新建的角色会保留。
 
 ### 合作类游戏与 AI 队友
 
@@ -136,7 +144,7 @@ AI 角色的核心是 `persona`（人设），这段文本会原样注入 system
 - 只有玩家明确表达长期意图（如「记住」「以后」「每次」）或确认 AI 的提议时，才会自动写入本局的战术备忘，并在之后每次决策时注入提示词。
 - AI 自己的发言不会变成约定；每条备忘不超过 30 字，可在备忘面板查看、编辑、删除或清空。
 - 备忘过多时会自动压缩；备忘只影响 AI 选哪个合法行动，不改变规则。
-- 发送后按钮立即恢复，不必等模型；连续发言不会被逐条排队回复（同一频道有回复冷却，设置 → 模型连接 → 高级参数可调）。
+- 发送后按钮立即恢复，不必等模型；连续发言不会被逐条排队回复（同一频道有回复冷却，设置 → AI → 模型连接 → 高级参数可调）。
 - 该功能挂在大厅层，所有 Mod 自动获得。设计文档见 [战术交流设计](docs/tactical-chat-design.md)。
 
 ### 自动存档
@@ -192,7 +200,7 @@ lib/server.js 大厅：会话、路由、应用行动
 
 每次模型调用会追加一行到 `<DSH_HOME 或 ~/.dsh>/boardgame-hall/decisions.jsonl`，记录模型、尝试次数、结果（`ok` / `parseError` / `validateError` / `fallback` 等）、耗时、token 用量和输出片段。
 
-`GET /api/agent-stats` 返回聚合指标（非法率、兜底率、平均耗时等），`?reset=1` 清零计数。网页「⚙️ 设置 → 📊 AI 指标」可直接查看。
+`GET /api/agent-stats` 返回聚合指标（非法率、兜底率、平均耗时等），`?reset=1` 清零计数。网页「⚙️ 设置 → AI → AI 指标」可直接查看。
 
 ---
 
@@ -205,12 +213,15 @@ lib/server.js 大厅：会话、路由、应用行动
 ├── lib/
 │   ├── agent/               # AI 架构：config / client / prompt / decoder / log / orchestrator
 │   ├── mods.js              # Mod 加载器与接口契约（顶部注释是完整文档）
+│   ├── i18n.js              # 大厅侧 i18n：语言规范化、Mod 元数据合并与回退
+│   ├── settings.js          # 大厅通用偏好（当前为语言），原子读写 settings.json
 │   ├── updater.js / store.js  # 大厅自动更新 / 游戏商店（install.js 版本目录，signing.js 签名，delta.js 增量更新，zip.js 解压）
 │   ├── ai.js                # AI 角色库
 │   ├── server.js            # HTTP、REST API、会话
 │   └── open.js              # 跨平台打开浏览器
-├── games/                   # 每个桌游一个 Mod
-├── public/                  # 大厅网页
+├── games/                   # 每个桌游一个 Mod（可自带 web/locales/ 语言包）
+├── public/                  # 大厅网页（i18n.js + locales/ 是大厅自己的语言包）
+│   └── locales/             # 大厅词典：zh-CN.js（源语言）/ en.js
 ├── relay/                   # 联机中转服务
 ├── tests/hall/              # 大厅通用回归（只依赖五子棋、井字棋和测试专用 Mod）
 ├── tests/fixtures/mods/     # 大厅测试专用 Mod，覆盖多人、私有信息、同时行动等能力，不随发布包分发
@@ -256,6 +267,29 @@ refineMove(state, seat, move) { /* -> 必杀/必防时改写模型的落点 */ }
 
 大厅不按游戏 ID 写分支。游戏专属界面（如图鉴、构筑、战役）由 Mod 自己提供，专属数据通过 `clientData` 下发，存档策略由 `sessionPolicy(state)` 声明。完整契约见 `lib/mods.js`；复杂 Mod 的完整示例见 [诡镇奇谈](games/arkhamhorror/README.md)。
 
+### 游戏本地化（可选）
+
+游戏可以自带语言包，让目录卡片、开局设置和游戏界面都跟随大厅当前语言（完整规则见 [大厅与游戏本地化](docs/localization.md)）：
+
+```js
+export default {
+  // ... 基础元数据（name/description/tags 等，作为源语言兜底）
+  i18n: {
+    defaultLocale: 'zh-CN',
+    supportedLocales: ['zh-CN', 'en'],
+    messages: {
+      en: {
+        name: 'Gobang', description: '...', tags: ['Abstract'],
+        settings: { firstMove: { label: 'First move', options: { player: 'Player first', ai: 'AI first' } } },
+      },
+    },
+  },
+  web: { dir: 'web', client: 'game-ui.js', locales: { 'zh-CN': 'locales/zh-CN.js', en: 'locales/en.js' } },
+}
+```
+
+没有 `i18n` 的旧 Mod 继续显示基础中文文案；大厅语言是英文且 Mod 声明了 `nameEn` 时只把名称换成英文。游戏前端在 `createUI(host)` 里通过 `host.locale` 拿到 `{ requested, resolved, defaultLocale, supportedLocales, matched, fellBack, files }`，实现可选的 `onLocaleChange(locale)` 就能在大厅切换语言时即时重绘；`resolved` 缺失时请回退 `'zh-CN'`。
+
 ### 测试
 
 ```bash
@@ -274,7 +308,9 @@ npm test                    # 大厅 + 所有 Mod
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/catalog` | 桌游目录（含 AI 座位与各 Mod 的设置项） |
+| GET | `/api/catalog` | 桌游目录（含 AI 座位与各 Mod 的设置项，已按当前语言本地化） |
+| GET | `/api/settings` | 大厅偏好（语言）与可选语言列表 |
+| POST | `/api/settings` | 保存大厅偏好（`{ locale }`；立即生效，重启保留） |
 | GET | `/api/config` | 当前模型配置（不含密钥） |
 | POST | `/api/config` | 保存模型配置到 `boardgame.config.json` |
 | POST | `/api/config/test` | 测试模型连接 |

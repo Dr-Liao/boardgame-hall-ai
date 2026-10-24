@@ -1,0 +1,31 @@
+﻿
+tier=all  wall=82.09s  tests=3119 failFiles=8  exit=1
+文件合计=666.43s  平均并行度≈8.1x（166 个文件）
+
+   文件                                     实测(s)
+  hall-online.test.mjs                        74.63
+  audit-resources.test.mjs                    38.58
+  replay-fuzz.test.mjs                        34.51
+  import-cards.test.mjs                       28.76
+  replay-fuzz-walker.test.mjs                  25.6
+  dunwich-rules.test.mjs                      21.73
+  decision-invariants.test.mjs                21.33
+  encounter-entries.test.mjs                  21.06
+  campaign-n4-purchase-stress.test.mjs         20.6
+  dunwich-player-acceptance.test.mjs          19.49
+  p2-hub-http.test.mjs                        19.22
+  replay-golden-campaigns.test.mjs             19.2
+
+失败文件：
+  - campaign-n4.test.mjs
+  - dunwich-player-gaps.test.mjs
+  - import-cards.test.mjs
+  - music-assets.test.mjs
+  - presentation-http.test.mjs
+  - presentation-images.test.mjs
+  - state-presentation.test.mjs
+  - tcu-migration.test.mjs
+
+（只显示前 12 个文件；去掉 --top 看完整列表）
+
+JSON: G:\boardgame-hall-ai\.test-audit\timings-all-p1b.json

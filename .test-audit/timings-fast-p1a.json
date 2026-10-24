@@ -1,0 +1,693 @@
+{
+  "tier": "fast",
+  "serial": false,
+  "generatedAt": "2026-10-24T07:12:41.739Z",
+  "wallSeconds": 37.02,
+  "exit": 1,
+  "tests": 2648,
+  "failFiles": 3,
+  "files": [
+    {
+      "file": "replay-golden.test.mjs",
+      "seconds": 27.61,
+      "tests": 5
+    },
+    {
+      "file": "encounter-entries.test.mjs",
+      "seconds": 10.08,
+      "tests": 7
+    },
+    {
+      "file": "checkpoint-rewind.test.mjs",
+      "seconds": 8.95,
+      "tests": 3
+    },
+    {
+      "file": "core-acceptance.test.mjs",
+      "seconds": 8.8,
+      "tests": 92
+    },
+    {
+      "file": "replay.test.mjs",
+      "seconds": 8.6,
+      "tests": 14
+    },
+    {
+      "file": "rules-n3.test.mjs",
+      "seconds": 7.53,
+      "tests": 52
+    },
+    {
+      "file": "tcu-investigators.test.mjs",
+      "seconds": 7.05,
+      "tests": 33
+    },
+    {
+      "file": "phase5-migration.test.mjs",
+      "seconds": 6.4,
+      "tests": 100
+    },
+    {
+      "file": "ai-completion.test.mjs",
+      "seconds": 6.3,
+      "tests": 19
+    },
+    {
+      "file": "dunwich-player-gaps.test.mjs",
+      "seconds": 6.25,
+      "tests": 54
+    },
+    {
+      "file": "tfa-interludes.test.mjs",
+      "seconds": 5.72,
+      "tests": 18
+    },
+    {
+      "file": "flow-n5.test.mjs",
+      "seconds": 5.36,
+      "tests": 26
+    },
+    {
+      "file": "tfa-player-acceptance.test.mjs",
+      "seconds": 5.29,
+      "tests": 89
+    },
+    {
+      "file": "tfa-investigators.test.mjs",
+      "seconds": 4.96,
+      "tests": 32
+    },
+    {
+      "file": "decision-http.test.mjs",
+      "seconds": 4.81,
+      "tests": 18
+    },
+    {
+      "file": "card-entries.test.mjs",
+      "seconds": 4.78,
+      "tests": 6
+    },
+    {
+      "file": "carcosa-investigators.test.mjs",
+      "seconds": 4.75,
+      "tests": 29
+    },
+    {
+      "file": "core-encounter-acceptance.test.mjs",
+      "seconds": 4.75,
+      "tests": 54
+    },
+    {
+      "file": "core-story-acceptance.test.mjs",
+      "seconds": 4.27,
+      "tests": 19
+    },
+    {
+      "file": "core-timing-acceptance.test.mjs",
+      "seconds": 4.16,
+      "tests": 40
+    },
+    {
+      "file": "hall-static.test.mjs",
+      "seconds": 3.7,
+      "tests": 1
+    },
+    {
+      "file": "core-scenario-acceptance.test.mjs",
+      "seconds": 3.61,
+      "tests": 29
+    },
+    {
+      "file": "campaign-experience.test.mjs",
+      "seconds": 3.5,
+      "tests": 14
+    },
+    {
+      "file": "tfa-encounter-p1.test.mjs",
+      "seconds": 3.49,
+      "tests": 24
+    },
+    {
+      "file": "scenario-n4b.test.mjs",
+      "seconds": 3.44,
+      "tests": 7
+    },
+    {
+      "file": "core-special-acceptance.test.mjs",
+      "seconds": 3.41,
+      "tests": 31
+    },
+    {
+      "file": "view-shared-state.test.mjs",
+      "seconds": 3.35,
+      "tests": 6
+    },
+    {
+      "file": "tcu-player-m2-2.test.mjs",
+      "seconds": 3.12,
+      "tests": 34
+    },
+    {
+      "file": "tcu-player-m2-4.test.mjs",
+      "seconds": 3.03,
+      "tests": 33
+    },
+    {
+      "file": "campaign-http-n4.test.mjs",
+      "seconds": 2.97,
+      "tests": 1
+    },
+    {
+      "file": "tcu-player-m2-1.test.mjs",
+      "seconds": 2.93,
+      "tests": 26
+    },
+    {
+      "file": "tfa-supply-picker.test.mjs",
+      "seconds": 2.82,
+      "tests": 7
+    },
+    {
+      "file": "tfa-launch-supplies.test.mjs",
+      "seconds": 2.73,
+      "tests": 10
+    },
+    {
+      "file": "carcosa-rules.test.mjs",
+      "seconds": 2.72,
+      "tests": 15
+    },
+    {
+      "file": "dunwich-migration.test.mjs",
+      "seconds": 2.66,
+      "tests": 41
+    },
+    {
+      "file": "tcu-player-m2-3.test.mjs",
+      "seconds": 2.59,
+      "tests": 24
+    },
+    {
+      "file": "dunwich-scenario-acceptance.test.mjs",
+      "seconds": 2.54,
+      "tests": 146
+    },
+    {
+      "file": "carcosa-implementation-gaps.test.mjs",
+      "seconds": 2.53,
+      "tests": 28
+    },
+    {
+      "file": "card-fidelity-p0.test.mjs",
+      "seconds": 2.46,
+      "tests": 42
+    },
+    {
+      "file": "carcosa-player-acceptance.test.mjs",
+      "seconds": 2.33,
+      "tests": 109
+    },
+    {
+      "file": "view-static.test.mjs",
+      "seconds": 2.29,
+      "tests": 3
+    },
+    {
+      "file": "ability-layer.test.mjs",
+      "seconds": 2.05,
+      "tests": 20
+    },
+    {
+      "file": "tfa-p2-hooks.test.mjs",
+      "seconds": 1.95,
+      "tests": 23
+    },
+    {
+      "file": "phase2-primitives.test.mjs",
+      "seconds": 1.71,
+      "tests": 20
+    },
+    {
+      "file": "ai-story.test.mjs",
+      "seconds": 1.7,
+      "tests": 6
+    },
+    {
+      "file": "card-identity.test.mjs",
+      "seconds": 1.49,
+      "tests": 12
+    },
+    {
+      "file": "card-fidelity-carcosa-p3.test.mjs",
+      "seconds": 1.41,
+      "tests": 7
+    },
+    {
+      "file": "card-fidelity-core-p3.test.mjs",
+      "seconds": 1.36,
+      "tests": 9
+    },
+    {
+      "file": "hub-concurrent.test.mjs",
+      "seconds": 1.36,
+      "tests": 2
+    },
+    {
+      "file": "card-fidelity-p1.test.mjs",
+      "seconds": 1.31,
+      "tests": 14
+    },
+    {
+      "file": "core-n4.test.mjs",
+      "seconds": 1.28,
+      "tests": 10
+    },
+    {
+      "file": "tfa-mechanics.test.mjs",
+      "seconds": 1.27,
+      "tests": 11
+    },
+    {
+      "file": "dunwich-encounter-acceptance.test.mjs",
+      "seconds": 1.25,
+      "tests": 75
+    },
+    {
+      "file": "attack-style.test.mjs",
+      "seconds": 1.24,
+      "tests": 3
+    },
+    {
+      "file": "card-fidelity-dunwich-p3.test.mjs",
+      "seconds": 1.22,
+      "tests": 6
+    },
+    {
+      "file": "tfa-visibility.test.mjs",
+      "seconds": 1.12,
+      "tests": 8
+    },
+    {
+      "file": "tcu-migration.test.mjs",
+      "seconds": 1.11,
+      "tests": 5
+    },
+    {
+      "file": "tfa-player-p1.test.mjs",
+      "seconds": 1.04,
+      "tests": 4
+    },
+    {
+      "file": "architecture-guard.test.mjs",
+      "seconds": 1,
+      "tests": 18
+    },
+    {
+      "file": "game-settings.test.mjs",
+      "seconds": 1,
+      "tests": 8
+    },
+    {
+      "file": "phase1-state.test.mjs",
+      "seconds": 0.97,
+      "tests": 9
+    },
+    {
+      "file": "tcu-primitives-story-investigators.test.mjs",
+      "seconds": 0.95,
+      "tests": 10
+    },
+    {
+      "file": "tfa-engine-setups.test.mjs",
+      "seconds": 0.88,
+      "tests": 10
+    },
+    {
+      "file": "tcu-primitives-circle.test.mjs",
+      "seconds": 0.83,
+      "tests": 9
+    },
+    {
+      "file": "tfa-rules.test.mjs",
+      "seconds": 0.77,
+      "tests": 9
+    },
+    {
+      "file": "tfa-shattered-aeons.test.mjs",
+      "seconds": 0.75,
+      "tests": 44
+    },
+    {
+      "file": "state-presentation.test.mjs",
+      "seconds": 0.73,
+      "tests": 14
+    },
+    {
+      "file": "tcu-primitives-p7.test.mjs",
+      "seconds": 0.71,
+      "tests": 5
+    },
+    {
+      "file": "script-card-ownership.test.mjs",
+      "seconds": 0.7,
+      "tests": 6
+    },
+    {
+      "file": "tcu-primitives-tarot-slot.test.mjs",
+      "seconds": 0.65,
+      "tests": 8
+    },
+    {
+      "file": "card-lifecycle.test.mjs",
+      "seconds": 0.61,
+      "tests": 13
+    },
+    {
+      "file": "tcu-primitives-bonded.test.mjs",
+      "seconds": 0.61,
+      "tests": 9
+    },
+    {
+      "file": "script-actions.test.mjs",
+      "seconds": 0.58,
+      "tests": 7
+    },
+    {
+      "file": "engagement-flow.test.mjs",
+      "seconds": 0.56,
+      "tests": 4
+    },
+    {
+      "file": "tcu-primitives-haunted.test.mjs",
+      "seconds": 0.55,
+      "tests": 18
+    },
+    {
+      "file": "turn-end-window.test.mjs",
+      "seconds": 0.55,
+      "tests": 9
+    },
+    {
+      "file": "tcu-primitives-parley.test.mjs",
+      "seconds": 0.53,
+      "tests": 9
+    },
+    {
+      "file": "reaction-preferences.test.mjs",
+      "seconds": 0.52,
+      "tests": 12
+    },
+    {
+      "file": "tcu-rules.test.mjs",
+      "seconds": 0.48,
+      "tests": 13
+    },
+    {
+      "file": "tcu-primitives-enemy-faces.test.mjs",
+      "seconds": 0.47,
+      "tests": 6
+    },
+    {
+      "file": "p1-regressions.test.mjs",
+      "seconds": 0.46,
+      "tests": 3
+    },
+    {
+      "file": "tcu-primitives-spectral-location.test.mjs",
+      "seconds": 0.46,
+      "tests": 7
+    },
+    {
+      "file": "tcu-primitives-campaign-records.test.mjs",
+      "seconds": 0.43,
+      "tests": 6
+    },
+    {
+      "file": "tcu-primitives-location-state.test.mjs",
+      "seconds": 0.42,
+      "tests": 6
+    },
+    {
+      "file": "tcu-interactions.test.mjs",
+      "seconds": 0.41,
+      "tests": 6
+    },
+    {
+      "file": "core-n4b.test.mjs",
+      "seconds": 0.39,
+      "tests": 3
+    },
+    {
+      "file": "view-privacy.test.mjs",
+      "seconds": 0.38,
+      "tests": 5
+    },
+    {
+      "file": "p0-regressions.test.mjs",
+      "seconds": 0.33,
+      "tests": 8
+    },
+    {
+      "file": "tcu-primitives-spectral-deck.test.mjs",
+      "seconds": 0.33,
+      "tests": 12
+    },
+    {
+      "file": "carcosa-pending-encounters.test.mjs",
+      "seconds": 0.32,
+      "tests": 2
+    },
+    {
+      "file": "tcu-primitives-cosmos.test.mjs",
+      "seconds": 0.32,
+      "tests": 6
+    },
+    {
+      "file": "deck-library.test.mjs",
+      "seconds": 0.3,
+      "tests": 3
+    },
+    {
+      "file": "carcosa-middle-b.test.mjs",
+      "seconds": 0.24,
+      "tests": 9
+    },
+    {
+      "file": "migration-tools.test.mjs",
+      "seconds": 0.24,
+      "tests": 8
+    },
+    {
+      "file": "carcosa-campaign-card-acceptance.test.mjs",
+      "seconds": 0.22,
+      "tests": 276
+    },
+    {
+      "file": "tfa-engine-integration.test.mjs",
+      "seconds": 0.22,
+      "tests": 2
+    },
+    {
+      "file": "content-schema.test.mjs",
+      "seconds": 0.2,
+      "tests": 4
+    },
+    {
+      "file": "tfa-p2-restart.test.mjs",
+      "seconds": 0.19,
+      "tests": 1
+    },
+    {
+      "file": "card-fidelity-tfa-p3.test.mjs",
+      "seconds": 0.16,
+      "tests": 4
+    },
+    {
+      "file": "core-ledger.test.mjs",
+      "seconds": 0.16,
+      "tests": 2
+    },
+    {
+      "file": "phase3-content.test.mjs",
+      "seconds": 0.15,
+      "tests": 14
+    },
+    {
+      "file": "card-interactions.test.mjs",
+      "seconds": 0.14,
+      "tests": 4
+    },
+    {
+      "file": "hall-boundary.test.mjs",
+      "seconds": 0.1,
+      "tests": 1
+    },
+    {
+      "file": "tfa-boundary-beyond.test.mjs",
+      "seconds": 0.1,
+      "tests": 42
+    },
+    {
+      "file": "tfa-depths-of-yoth.test.mjs",
+      "seconds": 0.1,
+      "tests": 41
+    },
+    {
+      "file": "tfa-city-of-archives.test.mjs",
+      "seconds": 0.09,
+      "tests": 38
+    },
+    {
+      "file": "tfa-heart-of-the-elders-part1.test.mjs",
+      "seconds": 0.09,
+      "tests": 38
+    },
+    {
+      "file": "tfa-heart-of-the-elders-part2.test.mjs",
+      "seconds": 0.09,
+      "tests": 28
+    },
+    {
+      "file": "tfa-doom-of-eztli.test.mjs",
+      "seconds": 0.08,
+      "tests": 41
+    },
+    {
+      "file": "tfa-threads-of-fate.test.mjs",
+      "seconds": 0.08,
+      "tests": 32
+    },
+    {
+      "file": "arkhamdb-import.test.mjs",
+      "seconds": 0.07,
+      "tests": 6
+    },
+    {
+      "file": "availability.test.mjs",
+      "seconds": 0.07,
+      "tests": 7
+    },
+    {
+      "file": "phase6-guard.test.mjs",
+      "seconds": 0.07,
+      "tests": 2
+    },
+    {
+      "file": "tfa-migration.test.mjs",
+      "seconds": 0.05,
+      "tests": 6
+    },
+    {
+      "file": "tfa-scenario-acceptance.test.mjs",
+      "seconds": 0.05,
+      "tests": 3
+    },
+    {
+      "file": "tfa-turn-back-time.test.mjs",
+      "seconds": 0.05,
+      "tests": 29
+    },
+    {
+      "file": "tcu-player-ledger.test.mjs",
+      "seconds": 0.04,
+      "tests": 4
+    },
+    {
+      "file": "tfa-story.test.mjs",
+      "seconds": 0.04,
+      "tests": 11
+    },
+    {
+      "file": "carcosa-final.test.mjs",
+      "seconds": 0.03,
+      "tests": 10
+    },
+    {
+      "file": "card-filters.test.mjs",
+      "seconds": 0.03,
+      "tests": 4
+    },
+    {
+      "file": "phase6-campaign.test.mjs",
+      "seconds": 0.03,
+      "tests": 7
+    },
+    {
+      "file": "tfa-untamed-wilds.test.mjs",
+      "seconds": 0.03,
+      "tests": 17
+    },
+    {
+      "file": "carcosa-all-card-ledger.test.mjs",
+      "seconds": 0.02,
+      "tests": 3
+    },
+    {
+      "file": "carcosa-literal-behavior.test.mjs",
+      "seconds": 0.02,
+      "tests": 5
+    },
+    {
+      "file": "carcosa-middle-a.test.mjs",
+      "seconds": 0.02,
+      "tests": 9
+    },
+    {
+      "file": "carcosa-opening.test.mjs",
+      "seconds": 0.02,
+      "tests": 8
+    },
+    {
+      "file": "card-rules.test.mjs",
+      "seconds": 0.02,
+      "tests": 1
+    },
+    {
+      "file": "content-registry.test.mjs",
+      "seconds": 0.02,
+      "tests": 3
+    },
+    {
+      "file": "dunwich-ledger.test.mjs",
+      "seconds": 0.02,
+      "tests": 1
+    },
+    {
+      "file": "encounter-handler-guard.test.mjs",
+      "seconds": 0.02,
+      "tests": 3
+    },
+    {
+      "file": "phase6-implementation.test.mjs",
+      "seconds": 0.02,
+      "tests": 6
+    },
+    {
+      "file": "suite-manifest.test.mjs",
+      "seconds": 0.02,
+      "tests": 1
+    },
+    {
+      "file": "tcu-primitives-tarot.test.mjs",
+      "seconds": 0.02,
+      "tests": 10
+    },
+    {
+      "file": "ai-dialogue.test.mjs",
+      "seconds": 0.01,
+      "tests": 5
+    },
+    {
+      "file": "carcosa-campaign.test.mjs",
+      "seconds": 0.01,
+      "tests": 7
+    },
+    {
+      "file": "carcosa-scenario-acceptance.test.mjs",
+      "seconds": 0.01,
+      "tests": 2
+    }
+  ],
+  "sumFileSeconds": 255.92,
+  "parallelism": 6.9
+}

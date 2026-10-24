@@ -1,0 +1,12 @@
+﻿[
+    {
+        "tier":  "fast",
+        "seconds":  95.54,
+        "exit":  1
+    },
+    {
+        "tier":  "assets",
+        "seconds":  64.82,
+        "exit":  1
+    }
+]

@@ -139,8 +139,51 @@ export default {
   description: '大厅回归专用的合作牌局。',
   tags: ['测试'],
   render: { kind: 'cards' },
-  settingsSpec: [],
+  settingsSpec: [
+    {
+      key: 'seed',
+      type: 'select',
+      label: '牌堆种子',
+      default: 'fixture',
+      options: [{ value: 'fixture', label: '固定（fixture）' }, { value: 'random', label: '随机' }],
+    },
+  ],
   defaults: { seed: 'fixture' },
+
+  // 可选 i18n：供大厅回归验证「目录元数据按语言下发」的契约（docs/localization.md §7.1）。
+  // 只有 messages 里出现的字段才被覆盖；省略的字段回退基础字段。
+  i18n: {
+    defaultLocale: 'zh-CN',
+    supportedLocales: ['zh-CN', 'en'],
+    messages: {
+      'zh-CN': {
+        aiSlotLabel: '测试 AI 对手',
+        aiSlotDescription: '由 AI 扮演的测试对手',
+        settings: {
+          seed: { label: '牌堆种子', description: '固定牌堆顺序，便于回归' },
+        },
+      },
+      en: {
+        name: 'Fixture Card Game',
+        description: 'Cooperative card game used only by hall regressions.',
+        tags: ['Test'],
+        aiSlotLabel: 'Test AI opponent',
+        aiSlotDescription: 'An AI-controlled test opponent',
+        settings: {
+          seed: { label: 'Deck seed', description: 'Fixed deck order for deterministic regressions' },
+        },
+      },
+    },
+  },
+
+  // 可选：前端语言包放在 web/locales/，由大厅生成 mod.web.localeUrls / catalog 的 i18n.files。
+  web: {
+    dir: 'web',
+    locales: {
+      'zh-CN': 'locales/zh-CN.js',
+      en: 'locales/en.js',
+    },
+  },
 
   moveFormat: '{"action":"pick","role":"..."} | {"action":"ready"} | {"action":"choose","choiceId":"...","optionId":"..."} | {"action":"play","index":0} | {"action":"pass"}',
   moveToText: move => JSON.stringify(move),

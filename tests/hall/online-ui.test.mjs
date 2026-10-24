@@ -62,3 +62,48 @@ test('online snapshots deferred during a move redraw afterward; late polling res
   await poll()
   assert.equal(state.session.state.revision, 0, 'late responses from the previous process stay retired')
 })
+
+test('联机命令把 body.client.autoPass 原样带给房主（P0 自动跳过的传输契约）', async t => {
+  const oldStorage = globalThis.localStorage, oldWindow = globalThis.window
+  globalThis.localStorage = { getItem: () => '', setItem() {} }
+  globalThis.window = { addEventListener() {} }
+  t.after(() => {
+    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow
+  })
+  const received = []
+  const state = { busy: false, chat: {}, catalog: [] }
+  const ui = createOnlineUI({
+    state, render() {}, renderChrome() {}, loadGame() {},
+    request: async (method, pathname, body) => { received.push({ method, pathname, body }); return { ok: true } },
+  })
+  const autoPass = { codes: ['01073', '01017'] }
+  await ui.command('move', { sessionId: 'game', revision: 7, move: { action: 'draw' }, client: { autoPass } })
+  const sent = received.find(item => item.pathname === '/online/command')
+  assert.ok(sent, '联机命令必须走 /online/command（直连不可用时）')
+  assert.equal(sent.body.action, 'move')
+  assert.deepEqual(sent.body.body.client.autoPass, autoPass, 'client.autoPass 不能被 slim/operationId 覆盖掉')
+  assert.equal(sent.body.body.client.slim, true)
+  assert.equal(sent.body.body.move.action, 'draw')
+})
+
+test('prefs 命令走同一条联机命令通道并保留 codes（P1 偏好同步契约）', async t => {
+  const oldStorage = globalThis.localStorage, oldWindow = globalThis.window
+  globalThis.localStorage = { getItem: () => '', setItem() {} }
+  globalThis.window = { addEventListener() {} }
+  t.after(() => {
+    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow
+  })
+  const received = []
+  const state = { busy: false, chat: {}, catalog: [] }
+  const ui = createOnlineUI({
+    state, render() {}, renderChrome() {}, loadGame() {},
+    request: async (method, pathname, body) => { received.push({ method, pathname, body }); return { ok: true } },
+  })
+  await ui.command('prefs', { sessionId: 'game', codes: ['01073'] })
+  const sent = received.find(item => item.pathname === '/online/command' && item.body?.action === 'prefs')
+  assert.ok(sent, 'prefs 必须经 /online/command 到达房主（直连不可用时）')
+  assert.deepEqual(sent.body.body.codes, ['01073'])
+  assert.equal(sent.body.body.sessionId, 'game')
+})

@@ -1,6 +1,6 @@
 # 自动更新与游戏商店
 
-大厅和每个游戏各自通过 GitHub Release 发版。大厅定期检查两边的新版本，在「⚙️ 设置 → 🔄 大厅更新」中一键更新大厅，在大厅的「🎮 游戏中心」中安装或更新游戏。
+大厅和每个游戏各自通过 GitHub Release 发版。大厅定期检查两边的新版本，在「⚙️ 设置 → 大厅更新」中一键更新大厅，在大厅的「🎮 游戏中心」中安装或更新游戏。
 
 ```
 GitHub
@@ -38,10 +38,24 @@ GitHub
    {
      "schema": 1,
      "games": [
-       { "id": "arkhamhorror", "repo": "Dr-Liao/boardgame-arkhamhorror", "name": "诡镇奇谈：卡牌版", "description": "合作卡牌，1~4 人", "coverEmoji": "🐙" }
+       {
+         "id": "arkhamhorror",
+         "repo": "Dr-Liao/boardgame-arkhamhorror",
+         "name": "诡镇奇谈：卡牌版",
+         "description": "合作卡牌，1~4 人",
+         "coverEmoji": "🐙",
+         "localized": {
+           "en": {
+             "name": "Arkham Horror: The Card Game",
+             "description": "Cooperative card game for 1–4 players"
+           }
+         }
+       }
      ]
    }
    ```
+
+   `localized` 是可选字段：游戏**尚未安装**时，大厅按当前语言从这里取商店展示文案；已安装的游戏以 Mod 自己的 `i18n` 为准（见 [本地化方案](localization.md) §7.7）。key 必须是合法 locale（用 `lib/i18n.js` 的 `normalizeLocale()` 规范化，如 `en`），值只允许 `name` / `description` 两个非空字符串；非法条目会被 `lib/store.js` 忽略并回退基础中文文案。旧目录、旧客户端、旧大厅都能继续按基础 `name` / `description` 工作，不需要等大厅发版，推 `main` 即生效。
 
    目录地址和大厅发布仓库都写在根 `package.json` 的 `boardgame` 字段中，打包时会一并写进发布包。已经分发出去的包会一直读这个地址，所以不要移动或重命名这个文件。
 
@@ -154,6 +168,12 @@ GitHub
 | `preserve` | 运行时生成、更新时要从旧版本带过来的文件（例如卡图缓存） |
 
 游戏包里不能有运行时 npm 依赖，因为玩家的机器上不会执行 `npm install`。
+
+**游戏语言包**：游戏自带的界面语言包放在 `web/locales/`（如 `web/locales/zh-CN.js`、`web/locales/en.js`），随现有 `web/` 目录一起打包、挂载到 `/mods/<id>/`。语言包是 ES module（`export default` 扁平对象），由 Mod 前端自行 `import()`；大厅只负责把 `index.js` 的 `web.locales` 生成绝对 URL，通过 catalog 的 `i18n.files` 交给 Mod（见 [本地化方案](localization.md) §8.2 / §12）。注意：
+
+- `boardgame-mod.json` 的 `exclude` 不要误排除 `web/locales/`；语言包不需要写进 `preserve`（不是运行时生成的文件）。
+- 不要把语言包放到 `games/<id>/locales/` 或仓库根目录，否则 `/mods/<id>/` 挂载与本文件的 `exclude` 规则都要改。
+- 目录/开局表单的元数据翻译写在 `index.js` 的 `i18n.messages` 里，和界面语言包分开维护；没有前端语言包的语言也可以先只声明 `messages`（此时游戏界面仍是默认语言，见 [本地化方案](localization.md) §8.2）。
 
 发布方式和大厅一样（打 tag 触发 CI），脚本在大厅仓库的 `games/arkhamhorror/release.bat`：它会检查工作区干净且与 `origin/main` 同步，只更新本仓库 `package.json` 和 `boardgame-mod.json` 的版本号，提交、打 tag 并推送到诡镇仓库，不改动大厅的版本。也可以手动修改 `boardgame-mod.json` 的 `version`，然后打 tag 并推送。诡镇奇谈是独立克隆（`games/arkhamhorror`），大厅不跟踪它的内容，所以发布诡镇后大厅仓库不需要任何提交。仓库里的 `.github/workflows/release.yml` 会签出大厅仓库，调用 `tools/release/pack-mod.mjs` 打包并签名，最后发布 Release。发布产物包括 `<id>-<版本>.zip`、增量更新用的 `<id>-<版本>.files.json` 和 `boardgame-mod.release.json`。玩家已有该游戏的旧版本（包括大厅内置的版本）时，只下载变化的文件。
 

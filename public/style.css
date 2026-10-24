@@ -90,14 +90,14 @@ body {
 }
 .bg-select:focus, .bg-input:focus { outline: none; border-color: #5b8cff; }
 textarea.bg-input { resize: vertical; min-height: 54px; line-height: 1.5; font-family: inherit; }
-.bg-btn { background: var(--accent); border: none; color: #fff; padding: 9px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
+.bg-btn { min-width: 0; max-width: 100%; background: var(--accent); border: none; color: #fff; padding: 9px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
 .bg-btn:hover { background: #3d78ff; }
 .bg-btn:disabled { opacity: .5; cursor: default; }
 .bg-btn.secondary { background: rgba(255,255,255,.08); color: #cdd6e6; }
 .bg-btn.secondary:hover { background: rgba(255,255,255,.16); }
 .bg-btn.danger { background: rgba(255,80,90,.15); color: var(--danger); }
 .bg-btn.danger:hover { background: rgba(255,80,90,.28); }
-.bg-modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.bg-modal-foot { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
 /* ---------------- 反馈弹窗（body 级 portal，不参与整页重绘） ---------------- */
 .bg-feedback-backdrop {
@@ -162,6 +162,32 @@ textarea.bg-input { resize: vertical; min-height: 54px; line-height: 1.5; font-f
 }
 .bg-tab:hover { color: var(--text); }
 .bg-tab-active { color: var(--text); font-weight: 700; border-bottom-color: var(--accent); }
+/* 合并页签（AI）内部的分段式二级页签：与顶层下划线页签区分开，390px 下整行铺满不溢出。 */
+.bg-subtabs {
+  display: inline-flex; flex-wrap: wrap; gap: 4px;
+  padding: 3px; margin: 0 0 16px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(255,255,255,.03);
+}
+.bg-subtab {
+  background: transparent; border: none; border-radius: 7px;
+  padding: 6px 12px; font-size: 13px; color: var(--text-dim); cursor: pointer;
+}
+.bg-subtab:hover { color: var(--text); background: rgba(255,255,255,.07); }
+.bg-subtab-active { color: #fff; background: rgba(91,140,255,.26); }
+@media (max-width: 420px) {
+  .bg-subtabs { display: flex; width: 100%; }
+  .bg-subtab { flex: 1 1 auto; text-align: center; padding: 6px 8px; }
+}
+/* ---------------- 设置 · 语言（docs/localization.md §5.3 / §6.4） ---------------- */
+/* 语言名用 endonym，同时允许长文案换行；下拉不写死宽度，390px 下也不横向溢出。 */
+.bg-lang-select { max-width: 340px; }
+.bg-lang-playing { margin-top: 4px; }
+.bg-lang-status { margin-top: 12px; word-break: break-word; }
+@media (max-width: 420px) {
+  .bg-tabs { gap: 2px; }
+  .bg-tab { padding: 8px 10px; font-size: 13px; }
+}
 .bg-model-row { display: flex; gap: 8px; align-items: center; }
 .bg-model-row .bg-input { min-width: 0; flex: 1; }
 .bg-key-toggle { flex: none; width: 42px; padding: 9px 0; }
@@ -296,7 +322,7 @@ a.bg-btn { display: inline-block; text-decoration: none; }
 @keyframes bg-pop-piece { from { opacity: 0; transform: translate(-50%, -50%) scale(.6); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 
 /* --------------------------------------------------------------------------
-   AI 决策指标（设置 · 📊 AI 指标）
+   AI 决策指标（设置 · AI → AI 指标）
    -------------------------------------------------------------------------- */
 .bg-stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .bg-stat { background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }

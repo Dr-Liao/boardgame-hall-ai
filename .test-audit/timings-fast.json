@@ -1,0 +1,13 @@
+{
+  "tier": "fast",
+  "serial": false,
+  "generatedAt": "2026-10-24T06:46:04.528Z",
+  "wallSeconds": 94.33,
+  "exit": 1,
+  "tests": 2648,
+  "pass": 2645,
+  "fail": 3,
+  "files": [],
+  "sumFileSeconds": 0,
+  "parallelism": 0
+}

@@ -6,6 +6,11 @@
 //      玩家填到一半的内容就没了。这里做成独立 portal，只在打开/关闭时创建和销毁。
 //   2. 表单是跨域的，不能预填、也读不到提交结果。版本信息只能通过剪贴板交给玩家自己粘贴；
 //      「提交成功」由玩家在表单里看到，大厅这边不做假提示。
+//
+// 本地化（docs/localization.md §6.2）：所有用户可见文案走 t()。因为弹窗是 portal、不参与
+// 大厅 render()，切换语言时由 onLocaleChange() 就地更新文本，不重建 iframe（避免丢失已填内容）。
+
+import { t } from './i18n.js'
 
 export const FEISHU_FORM_URL = 'https://my.feishu.cn/share/base/form/shrc6uDSVoM1wuWS7AB5K0pPtMg'
 
@@ -25,14 +30,14 @@ const ERROR_MAX_CHARS = 300
  * 放在这里导出，方便单元测试在不启浏览器的情况下覆盖格式和脱敏。
  */
 export function buildDiagnostics({ hallVersion = '', state = null, nav = globalThis.navigator, now = new Date() } = {}) {
-  const head = ['桌游大厅' + (hallVersion ? ' v' + hallVersion : '')]
+  const head = [t('app.title') + (hallVersion ? ' v' + hallVersion : '')]
   const platform = describePlatform(nav)
   if (platform) head.push(platform)
   const game = state?.session?.modName || state?.setup?.game?.name
-  if (game) head.push('游戏：' + game)
-  const lines = [head.join(' · '), '时间：' + formatTime(now)]
+  if (game) head.push(t('feedback.diagnostics.game', { game }))
+  const lines = [head.join(' · '), t('feedback.diagnostics.time', { time: formatTime(now) })]
   const error = typeof state?.error === 'string' ? state.error.replace(/\s+/g, ' ').trim() : ''
-  if (error) lines.push('最近错误：' + error.slice(0, ERROR_MAX_CHARS))
+  if (error) lines.push(t('feedback.diagnostics.error', { error: error.slice(0, ERROR_MAX_CHARS) }))
   return lines.join('\n')
 }
 
@@ -66,6 +71,8 @@ function browserFromUserAgent(ua) {
   return ''
 }
 
+// 诊断信息里的时间是给排障用的固定格式（YYYY-MM-DD HH:mm），刻意不随界面语言变化：
+// 保持可读、可粘贴、可跨语言比对；feedback 单测也锁定这个格式。
 function formatTime(date) {
   const pad = value => String(value).padStart(2, '0')
   return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate())
@@ -105,61 +112,94 @@ export function createFeedbackUI({ h, state, request, formUrl = FEISHU_FORM_URL 
   let loadTimer = null
   let resetTimer = null
   let diagnostics = ''
+  let hallVersion = ''
   let preview = null
   let copyButton = null
   let status = null
+  let copyState = 'idle'          // 'idle' | 'copied' | 'failed'
+  let loadingSlow = false
+  // 本地化绑定：语言切换时就地重写文本/属性，不重建 DOM（iframe 里填了一半的内容要保留）。
+  let bindings = []
+
+  const copyButtonText = () => copyState === 'copied' ? t('feedback.copied')
+    : copyState === 'failed' ? t('feedback.copyFailed') : t('feedback.copyDiagnostics')
+  const copyStatusText = () => copyState === 'copied' ? t('feedback.copiedStatus')
+    : copyState === 'failed' ? t('feedback.copyDeniedStatus') : ''
+
+  function bindText(el, get) { bindings.push({ el, get }); el.textContent = get() }
+  function bindAttr(el, attr, get) { bindings.push({ el, get, attr }); el.setAttribute(attr, get()) }
+  function applyTexts() {
+    for (const item of bindings) {
+      const text = item.get()
+      if (item.attr) item.el.setAttribute(item.attr, text)
+      else item.el.textContent = text
+    }
+  }
 
   function open() {
     if (backdrop) return
+    copyState = 'idle'
+    loadingSlow = false
+    bindings = []
     const body = h('div', { className: 'bg-feedback-body' })
-    const loading = h('div', { className: 'bg-feedback-loading' }, '正在加载反馈表单…')
+    const loading = h('div', { className: 'bg-feedback-loading' })
     const frame = h('iframe', {
       className: 'bg-feedback-frame',
       src: formUrl,
-      title: '桌游大厅反馈表单',
       sandbox: IFRAME_SANDBOX,
       referrerpolicy: 'no-referrer',
       onload: () => { clearTimeout(loadTimer); loading.hidden = true },
     })
+    bindAttr(frame, 'title', () => t('feedback.frameTitle'))
+    bindText(loading, () => loadingSlow ? t('feedback.slowLoad') : t('feedback.loadingForm'))
     body.append(frame, loading)
 
-    copyButton = h('button', {
-      type: 'button', className: 'bg-btn secondary bg-feedback-copy', disabled: true,
-      onclick: copy,
-    }, '📋 一键复制诊断信息')
+    copyButton = h('button', { type: 'button', className: 'bg-btn secondary bg-feedback-copy', disabled: true, onclick: copy })
+    bindText(copyButton, copyButtonText)
     status = h('span', { className: 'bg-feedback-status', role: 'status', 'aria-live': 'polite' })
-    preview = h('code', { className: 'bg-feedback-preview' }, '正在读取版本信息…')
+    bindText(status, copyStatusText)
+    preview = h('code', { className: 'bg-feedback-preview' })
+    bindText(preview, () => diagnostics ? diagnostics.split('\n')[0] : t('feedback.readingVersion'))
+
+    const heading = h('h2', null)
+    bindText(heading, () => t('feedback.title'))
+    const lead = h('p', { className: 'bg-feedback-lead' })
+    bindText(lead, () => t('feedback.lead'))
+    const openLink = h('a', { className: 'bg-feedback-open', href: formUrl, target: '_blank', rel: 'noopener' })
+    bindText(openLink, () => t('feedback.openInBrowser'))
+    const closeButton = h('button', { type: 'button', className: 'bg-feedback-close', onclick: close }, '×')
+    bindAttr(closeButton, 'aria-label', () => t('feedback.closeLabel'))
 
     backdrop = h('div', {
       className: 'bg-feedback-backdrop',
-      role: 'dialog', 'aria-modal': 'true', 'aria-label': '反馈',
+      role: 'dialog', 'aria-modal': 'true',
       onclick: event => { if (event.target === backdrop) close() },
     },
       h('section', { className: 'bg-feedback-modal' },
         h('header', { className: 'bg-feedback-head' },
-          h('div', { className: 'bg-feedback-heading' },
-            h('h2', null, '💬 反馈'),
-            h('p', { className: 'bg-feedback-lead' }, '问题或建议都可以写在这里，提交后直接进「桌游大厅问卷」。首次打开如遇到飞书的「AI 语音录入」提示，点 × 关掉即可。')),
+          h('div', { className: 'bg-feedback-heading' }, heading, lead),
           h('div', { className: 'bg-feedback-tools' },
             copyButton,
-            h('a', { className: 'bg-feedback-open', href: formUrl, target: '_blank', rel: 'noopener' }, '在浏览器打开'),
-            h('button', { type: 'button', className: 'bg-feedback-close', 'aria-label': '关闭反馈', onclick: close }, '×'))),
+            openLink,
+            closeButton)),
         h('div', { className: 'bg-feedback-meta' },
           preview,
           status),
         body))
+    bindAttr(backdrop, 'aria-label', () => t('feedback.dialogLabel'))
     document.body.append(backdrop)
     document.addEventListener('keydown', onKeydown)
-    backdrop.querySelector('.bg-feedback-close')?.focus({ preventScroll: true })
+    closeButton.focus({ preventScroll: true })
     loadTimer = setTimeout(() => {
       if (loading.hidden) return
-      loading.textContent = '表单加载较慢，可点右上角「在浏览器打开」'
+      loadingSlow = true
+      loading.textContent = t('feedback.slowLoad')
     }, LOAD_FALLBACK_MS)
     void refreshDiagnostics()
   }
 
   async function refreshDiagnostics() {
-    let hallVersion = state?.updates?.hallVersion || ''
+    if (!hallVersion) hallVersion = state?.updates?.hallVersion || ''
     if (!hallVersion && typeof request === 'function') {
       try { hallVersion = (await request('GET', '/updates'))?.hallVersion || '' } catch {}
     }
@@ -176,11 +216,13 @@ export function createFeedbackUI({ h, state, request, formUrl = FEISHU_FORM_URL 
   async function copy() {
     if (!diagnostics) return
     const copied = await writeClipboard(diagnostics)
-    if (copyButton) copyButton.textContent = copied ? '✅ 已复制' : '复制失败，请手动选择'
-    if (status) status.textContent = copied ? '已复制，粘贴到「游戏环境」或「问题描述」' : '浏览器拒绝了剪贴板访问，可手动复制预览'
+    copyState = copied ? 'copied' : 'failed'
+    if (copyButton) copyButton.textContent = copyButtonText()
+    if (status) status.textContent = copyStatusText()
     clearTimeout(resetTimer)
     resetTimer = setTimeout(() => {
-      if (copyButton) copyButton.textContent = '📋 一键复制诊断信息'
+      copyState = 'idle'
+      if (copyButton) copyButton.textContent = copyButtonText()
       if (status) status.textContent = ''
     }, COPY_RESET_MS)
   }
@@ -195,7 +237,9 @@ export function createFeedbackUI({ h, state, request, formUrl = FEISHU_FORM_URL 
     preview = null
     copyButton = null
     status = null
+    bindings = []
     diagnostics = ''
+    copyState = 'idle'
   }
 
   function onKeydown(event) {
@@ -204,15 +248,25 @@ export function createFeedbackUI({ h, state, request, formUrl = FEISHU_FORM_URL 
     close()
   }
 
+  /**
+   * 语言切换钩子（hall-shell 在 setLocale() 之后调用）：就地刷新弹窗文案，保留 iframe 状态与已填内容。
+   * 弹窗未打开时无需处理——下次 open() 会用当前语言重新构造。
+   */
+  function onLocaleChange() {
+    if (!backdrop || !bindings.length) return
+    applyTexts()
+    void refreshDiagnostics()
+  }
+
   /** 大厅里用的入口按钮：和「加入联机房间」同一套样式。 */
   function button() {
-    return h('button', { type: 'button', className: 'bg-btn secondary', onclick: open }, '💬 反馈')
+    return h('button', { type: 'button', className: 'bg-btn secondary', onclick: open }, t('feedback.entryButton'))
   }
 
   /** 对局顶部用的紧凑入口：只留图标，避免挤掉状态文字。 */
   function iconButton() {
-    return h('button', { type: 'button', className: 'bg-btn secondary', title: '反馈', 'aria-label': '反馈', onclick: open }, '💬')
+    return h('button', { type: 'button', className: 'bg-btn secondary', title: t('feedback.iconTitle'), 'aria-label': t('feedback.iconTitle'), onclick: open }, '💬')
   }
 
-  return { open, close, button, iconButton, isOpen: () => !!backdrop }
+  return { open, close, button, iconButton, onLocaleChange, isOpen: () => !!backdrop }
 }

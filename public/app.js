@@ -7,6 +7,7 @@ import { createOnlineUI } from './online-ui.js'
 import { createUpdatesUI } from './updates-ui.js'
 import { createFeedbackUI } from './feedback-ui.js'
 import { applyStatusDelta, statusStampOf } from './online-delta.js'
+import { getLocale, hasKey, setLocale, t } from './i18n.js'
 
 const root = document.getElementById('app')
 const query = new URLSearchParams(location.search)
@@ -34,6 +35,39 @@ const modLoading = new Map()
 const modFailed = new Set()
 // 记住加载失败的原因：打开开局界面时不能把它清掉，否则玩家只看到「通用界面」却不知道哪里坏了。
 const modErrors = new Map()
+// 已加载的 Mod 宿主对象（含 host.locale）；语言切换时按最新 catalog 更新并调用 ui.onLocaleChange。
+const modHosts = new Map()
+
+/** Mod 的语言信息（docs/localization.md §8.1）：来自 catalog 的 game.i18n；旧 Mod 给安全的源语言兜底。 */
+function localeFor(game) {
+  if (game?.i18n && typeof game.i18n === 'object') return game.i18n
+  return { requested: getLocale(), resolved: 'zh-CN', defaultLocale: 'zh-CN',
+    supportedLocales: [], matched: 'source', fellBack: true, files: null }
+}
+
+/** 渲染 Mod 名称时优先用当前 catalog 里的（已本地化）名称，不只信创建对局时缓存的 session.modName。 */
+function localizedModName(modId, fallback) {
+  return state.catalog.find((game) => game.id === modId)?.name || fallback || modId
+}
+
+/**
+ * 语言切换后把最新 catalog 的 i18n 推给每个已加载的 Mod UI（§8.3）：
+ * 只更新 host.locale 并调用幂等的 onLocaleChange，不重载 Mod 模块、不重置对局。
+ */
+function notifyModLocales() {
+  for (const [id, ui] of modUis) {
+    const host = modHosts.get(id)
+    const game = state.catalog.find((item) => item.id === id)
+    if (host && game) host.locale = localeFor(game)
+    try { ui.onLocaleChange?.(host?.locale) } catch (error) {
+      console.warn('[i18n] Mod ' + id + ' 的 onLocaleChange 执行失败：' + (error?.message || error))
+    }
+  }
+  // 更新/联机/反馈面板各自缓存文案或挂在 body 上（portal）：实现了 onLocaleChange 时重绘，旧模块静默跳过。
+  try { updatesUi.onLocaleChange?.() } catch { /* 旧模块没有该钩子 */ }
+  try { onlineUi.onLocaleChange?.() } catch { /* 旧模块没有该钩子 */ }
+  try { feedbackUi.onLocaleChange?.() } catch { /* 旧模块没有该钩子 */ }
+}
 
 function modUiFor(game) {
   return game ? modUis.get(game.id) || null : null
@@ -57,17 +91,21 @@ function loadModUi(game) {
   const loading = Promise.all([import(game.web.client), stylesLoaded])
     .then(([module]) => {
       // 宿主能力：DOM 构造、大厅 API、重绘与共享应用状态。Mod 只能用这些接口接入。
-      const ui = module.createUI({ h, api, render, state, game, reset, leave, beginInteraction,
+      // host.locale：服务端已解析好的语言（docs/localization.md §8.1）；不读它的旧 Mod 也不受影响。
+      const host = { h, api, render, state, game, reset, leave, beginInteraction,
         startGame, loadSavedSession, rememberSession, forgetSession, renderOnlineSetup: onlineUi.setupFields,
         // Mod 可以在自己的标题栏里放反馈入口；宿主负责弹窗本身，旧版 Mod 不调用也不受影响。
-        openFeedback: () => feedbackUi.open() })
+        openFeedback: () => feedbackUi.open(),
+        locale: localeFor(game) }
+      modHosts.set(game.id, host)
+      const ui = module.createUI(host)
       modUis.set(game.id, ui)
       return ui
     })
     .catch(error => {
       modFailed.add(game.id)
       modErrors.set(game.id, error.message)
-      state.error = '加载「' + game.name + '」界面失败：' + error.message
+      state.error = t('error.loadModUi', { game: localizedModName(game.id, game.name), error: errorText(error) })
       return null
     })
     .finally(() => { modLoading.delete(game.id); render() })
@@ -123,9 +161,11 @@ async function api(method, pathname, body) {
     const actions = {
       '/move': 'move', '/reset': 'reset', '/chat': 'chat', '/ai/retry': 'aiRetry',
       '/session/save': 'save', '/session/fork-checkpoint': 'forkCheckpoint',
+      // P1：自动跳过偏好同步（Mod 在开关变化/进局/重连时调用；与 move 走同一联机命令通道）。
+      '/prefs': 'prefs',
     }
     if (method === 'POST' && actions[pathname]) return onlineUi.command(actions[pathname], body)
-    if (pathname.startsWith('/notes/') || pathname.startsWith('/session/')) throw new Error('联机对局由房主统一管理存档与备忘')
+    if (pathname.startsWith('/notes/') || pathname.startsWith('/session/')) throw new Error(t('error.hostManaged'))
   }
   return rawApi(method, pathname, body)
 }
@@ -170,7 +210,7 @@ async function rawApi(method, pathname, body) {
   try {
     if (trackPerf) { responseText = await res.text(); data = JSON.parse(responseText) }
     else data = await res.json()
-  } catch { data = { ok: false, error: '响应解析失败' } }
+  } catch { data = { ok: false, error: t('error.responseParse') } }
   if (trackPerf) {
     perf.recordRequest({ path: pathname, method, ms: performance.now() - perfStarted,
       bytes: responseBytes(responseText, res.headers.get('content-length')) })
@@ -187,6 +227,17 @@ async function rawApi(method, pathname, body) {
     throw error
   }
   return data
+}
+
+/**
+ * 服务端错误 → 用户可见文案（docs/localization.md §6.3）：
+ * 有 error.<CODE> 词典项时用当前语言，否则显示服务端 error（中文兜底，已知限制）。
+ */
+function errorText(err) {
+  const code = err && typeof err === 'object' ? err.code : null
+  if (typeof code === 'string' && code && hasKey('error.' + code)) return t('error.' + code)
+  if (err && typeof err === 'object' && typeof err.message === 'string' && err.message) return err.message
+  return String(err == null ? '' : err)
 }
 
 // ---------------------------------------------------------------------------
@@ -214,8 +265,8 @@ function avatarLabel(value) {
 function fileToAvatar(file) {
   return new Promise((resolve, reject) => {
     const looksLikeImage = file && (/^image\//.test(file.type) || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name || ''))
-    if (!looksLikeImage) return reject(new Error('请选择图片文件'))
-    if (file.size > 10 * 1024 * 1024) return reject(new Error('图片不能超过 10MB'))
+    if (!looksLikeImage) return reject(new Error(t('player.avatarNotImage')))
+    if (file.size > 10 * 1024 * 1024) return reject(new Error(t('player.avatarTooLarge')))
     const objectUrl = URL.createObjectURL(file)
     const image = new Image()
     image.onload = () => {
@@ -223,14 +274,14 @@ function fileToAvatar(file) {
       try {
         const width = image.naturalWidth || image.width
         const height = image.naturalHeight || image.height
-        if (!width || !height) throw new Error('无法读取图片尺寸')
+        if (!width || !height) throw new Error(t('player.avatarBadDimension'))
         const side = Math.min(width, height)
         const size = 256
         const canvas = document.createElement('canvas')
         canvas.width = size
         canvas.height = size
         const ctx = canvas.getContext('2d')
-        if (!ctx) throw new Error('浏览器不支持图片处理')
+        if (!ctx) throw new Error(t('player.avatarUnsupported'))
         ctx.drawImage(image, (width - side) / 2, (height - side) / 2, side, side, 0, 0, size, size)
         const keepAlpha = ['image/png', 'image/webp', 'image/gif', 'image/svg+xml'].includes(file.type) || /\.(png|gif|webp|svg)$/i.test(file.name || '')
         let dataUrl = canvas.toDataURL(keepAlpha ? 'image/png' : 'image/jpeg', 0.86)
@@ -242,7 +293,7 @@ function fileToAvatar(file) {
     }
     image.onerror = () => {
       URL.revokeObjectURL(objectUrl)
-      reject(new Error('无法解析图片文件'))
+      reject(new Error(t('player.avatarParseFailed')))
     }
     image.src = objectUrl
   })
@@ -268,7 +319,13 @@ const state = {
   setup: null,     // { game, form }
   movePending: null, // 当前请求中的动作（供 Mod 展示处理状态）
   settingsOpen: false,
-  settingsTab: 'ais', // 'player' | 'ais' | 'model' | 'online' | 'stats' | 'updates'
+  // 顶层页签：AI 角色 / 模型连接 / AI 指标已合并进 'ai'，由 aiSubTab 选择二级页签。
+  settingsTab: 'ai', // 'player' | 'ai' | 'online' | 'updates' | 'language'
+  aiSubTab: 'roles', // 'roles' | 'model' | 'stats'
+  settings: null,     // GET /api/settings 的 settings 字段（{ schema, locale }）
+  locales: [],        // GET /api/settings 的 locales 字段（[{ id, label }]）
+  localeSaving: false, // 语言下拉框正在保存（禁用下拉，避免并发切换）
+  localeError: null,  // 保存语言失败时的错误文案（role="status" 播报）
   playerNameDraft: null,
   playerAvatarDraft: null,
   playerAvatarProcessing: false,
@@ -370,7 +427,12 @@ const feedbackUi = createFeedbackUI({ h, state, request: rawApi })
 async function reloadCatalog() {
   try {
     state.catalog = (await api('GET', '/catalog')).games || []
-  } catch (e) { state.error = String(e.message) }
+    // 语言切换后开局弹窗仍持有旧 catalog 对象：按 game.id 换成新对象，表单标签才会跟着变。
+    if (state.setup) {
+      const next = state.catalog.find((game) => game.id === state.setup.game.id)
+      if (next) state.setup.game = next
+    }
+  } catch (e) { state.error = errorText(e) }
   render()
 }
 
@@ -512,12 +574,12 @@ function renderApp() {
     const retry = (s.events || []).findLast(e => e.type === 'agentRetry' && e.revision === s.state.revision)
     if (state.busy && retry) {
       consoleEl.append(h('div', { className: 'bg-game-actions', role: 'status' },
-        `AI 自动重试中（${retry.attempt}/${retry.maxAttempts}），正在从当前局面继续。`))
+        t('game.autoRetry', { attempt: retry.attempt, max: retry.maxAttempts })))
     }
     if (!state.busy && !state.online?.busy && (!s.online || s.mySeat === 0) && !state.chat.pendings.length && s.state.status === 'playing' && s.players[seat]?.role === 'ai') {
       consoleEl.append(h('div', { className: 'bg-game-actions', role: 'status' },
-        h('span', null, 'AI 等待继续，已完成的行动会保留。'),
-        h('button', { className: 'bg-btn secondary', onclick: retryAi }, '继续 AI 行动')))
+        h('span', null, t('game.aiWaiting')),
+        h('button', { className: 'bg-btn secondary', onclick: retryAi }, t('game.continueAi'))))
     }
     consoleEl.append(renderGame(state.session))
   } else {
@@ -557,22 +619,22 @@ function renderLibrary() {
   return h('div', { className: 'bg-lib' },
     h('div', { className: 'bg-head' },
       h('div', null,
-        h('h1', null, '🎲 桌游大厅'),
-        h('div', { className: 'bg-sub' }, '选择一款桌游，与朋友联机或与 AI 对弈')
+        h('h1', null, t('library.title')),
+        h('div', { className: 'bg-sub' }, t('library.subtitle'))
       ),
       h('div', { className: 'bg-model-pill' + (cfg.hasKey ? '' : ' bg-model-pill-off') },
-        '🧠 ' + (cfg.hasKey ? (cfg.model || '已配置') : '未配置模型') + (cfg.hasKey ? '' : '，AI 由本地引擎代替落子且不说话')
+        '🧠 ' + (cfg.hasKey ? (cfg.model || t('library.modelConfigured')) : t('library.modelMissing')) + (cfg.hasKey ? '' : t('library.modelMissingSuffix'))
       )
     ),
     h('div', { className: 'bg-online-entry' }, onlineUi.joinButton(), updatesUi.gameCenterButton(), feedbackUi.button()),
     h('div', { className: 'bg-grid' },
       state.catalog.length === 0
-        ? h('div', { className: 'bg-empty' }, '加载中…')
+        ? h('div', { className: 'bg-empty' }, t('library.loading'))
         : state.catalog.map(renderGameCard)
     ),
     h('button', {
       className: 'bg-settings-btn' + (updatesUi.hasHallUpdates() ? ' bg-settings-btn-dot' : ''),
-      title: updatesUi.hasHallUpdates() ? '设置 · 大厅有可用更新' : '设置 · 玩家与 AI',
+      title: updatesUi.hasHallUpdates() ? t('library.settingsTitleUpdates') : t('library.settingsTitle'),
       onclick: () => { state.settingsOpen = true; render() },
     }, '⚙️')
   )
@@ -584,8 +646,8 @@ function renderGameCard(g) {
     h('div', { className: 'bg-cover', style: { background: g.cover } }, h('span', null, g.coverEmoji)),
     h('div', { className: 'bg-card-meta' },
       h('div', { className: 'bg-card-name' }, g.name),
-      h('div', { className: 'bg-card-players' }, loading ? '正在加载…' : '👥 ' + g.players[0] + '–' + g.players[1] + ' 人'),
-      h('div', { className: 'bg-card-tags' }, (g.tags || []).map((t) => h('span', { className: 'bg-tag' }, t)))
+      h('div', { className: 'bg-card-players' }, loading ? t('library.loadingGame') : t('game.players', { min: g.players[0], max: g.players[1] })),
+      h('div', { className: 'bg-card-tags' }, (g.tags || []).map((tag) => h('span', { className: 'bg-tag' }, tag)))
     )
   )
 }
@@ -635,14 +697,14 @@ function renderSetupModal(game) {
 
   return h('div', { className: 'bg-backdrop' },
     h('div', { className: 'bg-modal', onclick: (e) => e.stopPropagation() },
-      h('h2', null, '开始游戏 · ' + game.name),
+      h('h2', null, t('setup.title', { game: game.name })),
       h('p', { className: 'bg-desc' }, game.description),
       fields,
       onlineUi.setupFields(game),
       state.error ? h('div', { className: 'bg-toast', style: { position: 'static', marginBottom: '12px', transform: 'none' } }, state.error) : null,
       h('div', { className: 'bg-modal-foot' },
-        h('button', { className: 'bg-btn secondary', onclick: () => { state.setup = null; state.error = null; render() } }, '取消'),
-        h('button', { className: 'bg-btn', disabled: state.busy, onclick: startGame }, state.busy ? '创建中…' : '开始对局')
+        h('button', { className: 'bg-btn secondary', onclick: () => { state.setup = null; state.error = null; render() } }, t('setup.cancel')),
+        h('button', { className: 'bg-btn', disabled: state.busy, onclick: startGame }, state.busy ? t('setup.starting') : t('setup.start'))
       )
     )
   )
@@ -717,60 +779,153 @@ async function startGame() {
     state.setup = null
     state.view = 'game'
     state.error = null
-  } catch (e) { state.error = String(e.message) }
+  } catch (e) { state.error = errorText(e) }
   finally { state.busy = false; render() }
 }
 
 // ---------------------------------------------------------------------------
-// 设置：AI 列表 + 编辑器
+// 设置：页签容器 + 各面板
+//
+// AI 角色 / 模型连接 / AI 指标合并为单个「AI」顶层页签，内部用二级页签切换，
+// 保证顶部页签在一行内放下（窄屏不换行），且页签文案不再带 emoji。
 // ---------------------------------------------------------------------------
 
 function renderSettingsModal() {
   if (state.aiEdit) return renderAiEditor(state.aiEdit)
-  const tab = state.settingsTab || 'ais'
+  const tab = state.settingsTab || 'ai'
+  const aiSubTab = state.aiSubTab || 'roles'
   const tabBtn = (key, label) => h('button', {
     className: 'bg-tab' + (tab === key ? ' bg-tab-active' : ''),
     onclick: () => {
       state.settingsTab = key
       state.aiEdit = null
       state.modelResult = null
-      if (key === 'model') initModelForm()
-      if (key === 'stats') loadStats()
+      // 回到 AI 页签时按上次停留的二级页签补齐数据（model 表单 / stats 快照）。
+      if (key === 'ai') {
+        if (aiSubTab === 'model') initModelForm()
+        if (aiSubTab === 'stats') loadStats()
+      }
       if (key === 'updates') updatesUi.open()
       render()
     },
   }, label)
+  // 合并后的 AI 页签：原来的三个顶层页签收成这里的二级页签，避免顶部页签换行。
+  const aiSubBtn = (key, label) => h('button', {
+    className: 'bg-subtab' + (aiSubTab === key ? ' bg-subtab-active' : ''),
+    'aria-pressed': aiSubTab === key ? 'true' : 'false',
+    onclick: () => {
+      if (aiSubTab === key) return
+      state.aiSubTab = key
+      state.aiEdit = null
+      state.modelResult = null
+      if (key === 'model') initModelForm()
+      if (key === 'stats') loadStats()
+      render()
+    },
+  }, label)
+  const aiPanel = h('div', null,
+    h('div', { className: 'bg-subtabs', role: 'group', 'aria-label': t('settings.tabs.ai') },
+      aiSubBtn('roles', t('settings.tabs.ais')),
+      aiSubBtn('model', t('settings.tabs.model')),
+      aiSubBtn('stats', t('settings.tabs.stats'))
+    ),
+    aiSubTab === 'model' ? renderModelTab() : aiSubTab === 'stats' ? renderStatsTab() : renderAiList()
+  )
 
   return h('div', { className: 'bg-backdrop' },
     h('div', { className: 'bg-modal', onclick: (e) => e.stopPropagation() },
-      h('h2', null, '⚙️ 设置'),
+      h('h2', null, t('settings.title')),
       h('div', { className: 'bg-tabs' },
-        tabBtn('player', '👤 玩家'),
-        tabBtn('ais', '🤖 AI 角色'),
-        tabBtn('model', '🔌 模型连接'),
-        tabBtn('online', '🌐 联机'),
-        tabBtn('stats', '📊 AI 指标'),
-        tabBtn('updates', '🔄 大厅更新' + (updatesUi.hasHallUpdates() ? ' •' : ''))
+        tabBtn('player', t('settings.tabs.player')),
+        tabBtn('ai', t('settings.tabs.ai')),
+        tabBtn('online', t('settings.tabs.online')),
+        tabBtn('updates', t('settings.tabs.updates') + (updatesUi.hasHallUpdates() ? ' •' : '')),
+        tabBtn('language', t('settings.tabs.language'))
       ),
-      tab === 'player' ? renderPlayerTab() : tab === 'online' ? onlineUi.settingsPanel() : tab === 'model' ? renderModelTab()
-        : tab === 'updates' ? updatesUi.panel() : (tab === 'stats' ? renderStatsTab() : renderAiList()),
+      tab === 'player' ? renderPlayerTab() : tab === 'ai' ? aiPanel : tab === 'online' ? onlineUi.settingsPanel()
+        : tab === 'updates' ? updatesUi.panel() : renderLanguageTab(),
       h('div', { className: 'bg-modal-foot' },
-        h('button', { className: 'bg-btn secondary', onclick: () => feedbackUi.open() }, '💬 反馈'),
-        h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = false; render() } }, '关闭'),
-        tab === 'ais' ? h('button', { className: 'bg-btn', disabled: state.busy, onclick: createAi }, '➕ 新增 AI')
-          : tab === 'stats' ? h('button', { className: 'bg-btn secondary', disabled: state.statsBusy, onclick: loadStats }, '🔄 刷新')
+        h('button', { className: 'bg-btn secondary', onclick: () => feedbackUi.open() }, t('settings.feedback')),
+        h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = false; render() } }, t('settings.close')),
+        // 指标面板自带刷新/清空按钮，footer 只在 AI 角色列表下提供「新增 AI」。
+        tab === 'ai' && aiSubTab === 'roles'
+          ? h('button', { className: 'bg-btn', disabled: state.busy, onclick: createAi }, t('settings.addAi'))
           : null
       )
     )
   )
 }
 
+// ---------------------------------------------------------------------------
+// 设置 · 语言（docs/localization.md §5.3）
+// ---------------------------------------------------------------------------
+
+function renderLanguageTab() {
+  const current = state.settings?.locale || getLocale()
+  const options = state.locales.length ? state.locales : [{ id: 'zh-CN', label: '简体中文' }]
+  const select = h('select', {
+    id: 'hall-locale',
+    className: 'bg-select bg-lang-select',
+    'data-testid': 'hall-locale',
+    // renderNow() 按 data-interaction 恢复焦点；保存中下拉是 disabled，保存结束后再显式聚焦一次。
+    'data-interaction': 'hall-locale',
+    disabled: state.localeSaving,
+    onchange: (event) => saveLocale(event.target.value),
+  })
+  for (const option of options) select.append(h('option', { value: option.id }, option.label))
+  select.value = current
+  return h('div', null,
+    h('div', { className: 'bg-sec' }, t('settings.language.title')),
+    h('p', { className: 'bg-desc' }, t('settings.language.desc')),
+    h('div', { className: 'bg-field' },
+      h('label', { for: 'hall-locale' }, t('settings.language.selectLabel')),
+      select
+    ),
+    state.session ? h('p', { className: 'bg-field-hint bg-lang-playing' }, t('settings.language.playing')) : null,
+    state.localeError ? h('div', { className: 'bg-model-result err bg-lang-status', role: 'status' },
+      t('settings.language.saveFailed', { error: state.localeError })) : null
+  )
+}
+
+function focusLocaleSelect() {
+  if (!state.settingsOpen) return
+  root.querySelector('[data-testid="hall-locale"]')?.focus({ preventScroll: true })
+}
+
+/** 选择语言后立即保存（与「大厅更新」页一致）；失败回滚下拉、不改语言。 */
+async function saveLocale(locale) {
+  if (state.localeSaving || !locale || locale === (state.settings?.locale || getLocale())) return
+  state.localeSaving = true
+  state.localeError = null
+  render()
+  try {
+    const response = await api('POST', '/settings', { locale })
+    state.settings = response.settings || { ...(state.settings || {}), locale }
+    if (Array.isArray(response.locales) && response.locales.length) state.locales = response.locales
+    setLocale(state.settings.locale || locale)
+    // setLocale 之后必须重新拉 catalog：目录/开局表单元数据由服务端按新语言解析后下发。
+    await reloadCatalog()
+    notifyModLocales()
+  } catch (error) {
+    // 失败不改变当前语言：state.settings 保持旧值，重绘后下拉框自然回到旧选项。
+    state.localeError = errorText(error)
+  } finally {
+    state.localeSaving = false
+    render()
+    focusLocaleSelect()
+  }
+}
+
+// 浏览器回归用（docs/localization.md §14.3）：已开局时设置页不可达，用例通过
+// `await import('/app.js')` 调用同一个切换流程，验证 onLocaleChange 与对局不重置。
+export { saveLocale }
+
 function renderPlayerTab() {
   const avatar = state.playerAvatarDraft ?? state.config?.playerAvatar ?? '👤'
   const disabled = state.playerSaving || state.playerAvatarProcessing
   const fileInput = h('input', {
     type: 'file', accept: 'image/*', hidden: true, disabled,
-    'aria-label': '上传玩家头像', onchange: async e => {
+    'aria-label': t('player.uploadAvatarAria'), onchange: async e => {
       const file = e.target.files?.[0]
       if (!file || state.playerAvatarProcessing || state.playerSaving) return
       state.playerAvatarProcessing = true
@@ -787,32 +942,32 @@ function renderPlayerTab() {
     },
   })
   return h('div', null,
-    h('p', { className: 'bg-desc' }, '设置你在游戏中的头像和名字，AI 也能看到并识别这个名称。'),
+    h('p', { className: 'bg-desc' }, t('player.desc')),
     h('div', { className: 'bg-avatar-edit' },
-      h('span', { className: 'bg-ai-avatar bg-ai-avatar-preview', role: 'img', 'aria-label': '玩家头像预览', style: { background: '#3aa0ff' } }, avatarContent(avatar)),
+      h('span', { className: 'bg-ai-avatar bg-ai-avatar-preview', role: 'img', 'aria-label': t('player.avatarPreview'), style: { background: '#3aa0ff' } }, avatarContent(avatar)),
       h('div', { className: 'bg-avatar-edit-body' },
         h('div', { className: 'bg-avatar-actions' },
-          h('button', { type: 'button', className: 'bg-btn secondary', disabled, onclick: () => fileInput.click() }, state.playerAvatarProcessing ? '处理中…' : '上传头像'),
+          h('button', { type: 'button', className: 'bg-btn secondary', disabled, onclick: () => fileInput.click() }, state.playerAvatarProcessing ? t('common.processing') : t('player.uploadAvatar')),
           h('button', { type: 'button', className: 'bg-btn secondary', disabled, onclick: () => {
             state.playerAvatarDraft = '👤'; state.playerResult = null; render()
-          } }, '恢复默认'),
+          } }, t('player.resetAvatar')),
         ),
-        h('p', { className: 'bg-field-hint' }, '支持常见图片格式，最大 10MB。图片会居中裁剪为正方形，用于游戏玩家栏与聊天头像。'),
+        h('p', { className: 'bg-field-hint' }, t('player.avatarHint')),
         fileInput,
       ),
     ),
     h('div', { className: 'bg-field' },
-      h('label', { for: 'player-name' }, '玩家名称'),
+      h('label', { for: 'player-name' }, t('player.nameLabel')),
       h('input', {
         id: 'player-name', className: 'bg-input', type: 'text', maxlength: 32,
         value: state.playerNameDraft ?? state.config?.playerName ?? 'player',
         placeholder: 'player', disabled: state.playerSaving,
         oninput: e => { state.playerNameDraft = e.target.value; state.playerResult = null },
       }),
-      h('p', { className: 'bg-field-hint' }, '最多 32 个字符，留空恢复为 player。保存后用于新开或重开的对局，已有存档保留原名称。'),
+      h('p', { className: 'bg-field-hint' }, t('player.nameHint')),
     ),
-    h('p', { className: 'bg-field-hint' }, '头像与名称一起保存。新开或重开的对局使用新头像，已有存档保留原头像。'),
-    h('button', { className: 'bg-btn', disabled, onclick: savePlayerProfile }, state.playerSaving ? '保存中…' : '💾 保存玩家资料'),
+    h('p', { className: 'bg-field-hint' }, t('player.saveHint')),
+    h('button', { className: 'bg-btn', disabled, onclick: savePlayerProfile }, state.playerSaving ? t('common.saving') : t('player.save')),
     state.playerResult ? h('div', { className: 'bg-model-result ' + (state.playerResult.ok ? 'ok' : 'err'), role: 'status' }, state.playerResult.text) : null,
   )
 }
@@ -828,9 +983,9 @@ async function savePlayerProfile() {
     state.config = await api('POST', '/config', { playerName, playerAvatar })
     state.playerNameDraft = state.config.playerName
     state.playerAvatarDraft = state.config.playerAvatar
-    state.playerResult = { ok: true, text: '已保存，下一局将使用「' + state.config.playerName + '」和当前头像。' }
+    state.playerResult = { ok: true, text: t('player.saved', { name: state.config.playerName }) }
   } catch (error) {
-    state.playerResult = { ok: false, text: error.message }
+    state.playerResult = { ok: false, text: errorText(error) }
   } finally {
     state.playerSaving = false
     render()
@@ -839,9 +994,9 @@ async function savePlayerProfile() {
 
 function renderAiList() {
   return h('div', null,
-    h('p', { className: 'bg-desc' }, '编辑 AI 的「人设」。人设会作为 system prompt 注入模型，由模型据此扮演：决定落子与台词。'),
+    h('p', { className: 'bg-desc' }, t('ai.desc')),
     h('div', { className: 'bg-ai-list' },
-      state.ais.length === 0 ? h('div', { className: 'bg-empty' }, '还没有 AI，点击下方「新增 AI」创建。') : null,
+      state.ais.length === 0 ? h('div', { className: 'bg-empty' }, t('ai.empty')) : null,
       state.ais.map((ai) =>
         h('div', { className: 'bg-ai-card' },
           h('div', { className: 'bg-ai-row' },
@@ -851,8 +1006,8 @@ function renderAiList() {
               h('div', { className: 'bg-ai-meta' }, aiMetaText(ai))
             ),
             h('div', { className: 'bg-ai-actions' },
-              h('button', { className: 'bg-btn secondary', style: { padding: '5px 10px', fontSize: '12px' }, onclick: () => { state.aiEdit = ai; render() } }, '编辑'),
-              h('button', { className: 'bg-btn danger', style: { padding: '5px 10px', fontSize: '12px' }, onclick: () => deleteAi(ai.id) }, '删除')
+              h('button', { className: 'bg-btn secondary', style: { padding: '5px 10px', fontSize: '12px' }, onclick: () => { state.aiEdit = ai; render() } }, t('ai.edit')),
+              h('button', { className: 'bg-btn danger', style: { padding: '5px 10px', fontSize: '12px' }, onclick: () => deleteAi(ai.id) }, t('ai.delete'))
             )
           )
         )
@@ -945,6 +1100,8 @@ function renderModelTab() {
   }
   const advancedNumber = (label, key, attrs, hint) => h('div', { className: 'bg-field' },
     h('label', null, label),
+    // aria-label 保持内部参数名（如 maxTurnCalls）：这是既有浏览器用例使用的稳定选择器，
+    // 可见文案仍走本地化 label；不要把它换成会随语言变化的文本。
     numberInput(key, attrs),
     hint ? h('div', { className: 'bg-field-hint' }, hint) : null
   )
@@ -958,93 +1115,98 @@ function renderModelTab() {
   const result = state.modelResult
     ? h('div', { className: 'bg-model-result ' + (state.modelResult.ok ? 'ok' : 'err') },
         state.modelResult.ok
-          ? '✅ ' + (state.modelResult.reply || '完成') + (state.modelResult.latencyMs != null ? '（耗时 ' + state.modelResult.latencyMs + 'ms）' : '')
-          : '❌ ' + (state.modelResult.error || '失败'))
+          ? (state.modelResult.latencyMs != null
+              ? t('model.testOkLatency', { reply: state.modelResult.reply || t('model.doneFallback'), ms: state.modelResult.latencyMs })
+              : t('model.testOk', { reply: state.modelResult.reply || t('model.doneFallback') }))
+          : t('model.testFailed', { error: state.modelResult.error || t('model.failedFallback') }))
     : null
   const busy = state.modelBusy
-  const currentBudget = '当前生效：单回合 ' + Math.round((cfg.turnTimeoutMs || 0) / 1000) + 's · 提示词 ≈' +
-    (cfg.maxPromptTokens || 0) + ' token · 记忆窗口 ' + (cfg.memorySteps || 2) + ' 步 · ' +
-    '结构化输出 ' + (cfg.jsonMode || 'auto')
+  const currentBudget = t('model.currentBudget', {
+    seconds: Math.round((cfg.turnTimeoutMs || 0) / 1000),
+    tokens: cfg.maxPromptTokens || 0,
+    steps: cfg.memorySteps || 2,
+    mode: cfg.jsonMode || 'auto',
+  })
   const advanced = h('details', {
     className: 'bg-advanced',
     open: state.modelAdvancedOpen,
     ontoggle: (e) => { state.modelAdvancedOpen = !!e.target.open },
   },
-    h('summary', null, '⚙️ 高级参数'),
-    h('p', { className: 'bg-field-hint', style: { marginTop: '8px' } }, '保存后写入 boardgame.config.json；若同名环境变量已设置，环境变量仍然优先。留空会回落到当前值或默认值。'),
-    h('div', { className: 'bg-sec' }, '采样与单次调用'),
+    h('summary', null, t('model.advanced')),
+    h('p', { className: 'bg-field-hint', style: { marginTop: '8px' } }, t('model.advancedHint')),
+    h('div', { className: 'bg-sec' }, t('model.sectionSampling')),
     h('div', { className: 'bg-grid-2' },
-      advancedNumber('温度 temperature', 'temperature', { step: '0.1', min: '0', max: '2' }, '越高越随机；默认 0.7'),
-      advancedNumber('Top P', 'topP', { step: '0.05', min: '0', max: '1' }, '<=0 表示不发送该参数'),
-      advancedSelect('结构化输出 jsonMode', [
+      advancedNumber(t('model.temperatureLabel'), 'temperature', { step: '0.1', min: '0', max: '2' }, t('model.temperatureHint')),
+      advancedNumber('Top P', 'topP', { step: '0.05', min: '0', max: '1' }, t('model.topPHint')),
+      advancedSelect(t('model.jsonModeLabel'), [
         { value: 'auto', label: 'auto' },
         { value: 'on', label: 'on' },
         { value: 'off', label: 'off' },
-      ], f.jsonMode, (e) => { f.jsonMode = e.target.value }, '推荐 auto，后端不支持 response_format 时会自动降级；on 始终要求 JSON；off 只靠提示词约束'),
-      advancedNumber('单步重试 maxRetries', 'maxRetries', { step: '1', min: '1', max: '20' }, '单个决策步内允许的模型调用次数'),
-      advancedNumber('单次超时 timeoutMs (ms)', 'timeoutMs', { step: '1000', min: '1000', max: '600000' }, '单次 /chat/completions 请求的超时时间'),
-      advancedNumber('输出上限 maxTokens', 'maxTokens', { step: '100', min: '0', max: '100000' }, '<=0 表示不发送该参数，由后端决定'),
-      advancedSelect('推理强度 reasoningEffort', [
-        { value: '', label: '不指定（后端默认）' },
+      ], f.jsonMode, (e) => { f.jsonMode = e.target.value }, t('model.jsonModeHint')),
+      advancedNumber(t('model.maxRetriesLabel'), 'maxRetries', { step: '1', min: '1', max: '20' }, t('model.maxRetriesHint')),
+      advancedNumber(t('model.timeoutLabel'), 'timeoutMs', { step: '1000', min: '1000', max: '600000' }, t('model.timeoutHint')),
+      advancedNumber(t('model.maxTokensLabel'), 'maxTokens', { step: '100', min: '0', max: '100000' }, t('model.maxTokensHint')),
+      advancedSelect(t('model.effortLabel'), [
+        { value: '', label: t('model.effortDefault') },
         { value: 'minimal', label: 'minimal' },
         { value: 'low', label: 'low' },
         { value: 'medium', label: 'medium' },
         { value: 'high', label: 'high' },
         { value: 'max', label: 'max' },
       ], f.reasoningEffort || '', (e) => { f.reasoningEffort = e.target.value },
-      '推理型模型（如 DeepSeek flash / pro）会先思考再回答：棋类建议 low，剧本推理可用 high；后端不支持该参数时会自动忽略'),
+      t('model.effortHint')),
     ),
-    h('div', { className: 'bg-sec' }, '回合与上下文预算'),
+    h('div', { className: 'bg-sec' }, t('model.sectionBudget')),
     h('div', { className: 'bg-grid-2' },
-      advancedNumber('单回合调用上限 maxTurnCalls', 'maxTurnCalls', { step: '1', min: '1', max: '100' }, '一个 AI 回合内允许的模型调用总次数'),
-      advancedNumber('单回合墙钟 turnTimeoutMs (ms)', 'turnTimeoutMs', { step: '1000', min: '0', max: '3600000' }, '<=0 表示关闭该回合的墙钟限制'),
-      advancedNumber('提示词预算 maxPromptTokens', 'maxPromptTokens', { step: '1024', min: '0', max: '2000000' }, '超出后优先丢弃更早的对话历史'),
-      advancedNumber('回合内记忆 memorySteps', 'memorySteps', { step: '1', min: '1', max: '20' }, '保留最近 N 步决策 + 当前步'),
+      advancedNumber(t('model.maxTurnCallsLabel'), 'maxTurnCalls', { step: '1', min: '1', max: '100' }, t('model.maxTurnCallsHint')),
+      advancedNumber(t('model.turnTimeoutLabel'), 'turnTimeoutMs', { step: '1000', min: '0', max: '3600000' }, t('model.turnTimeoutHint')),
+      advancedNumber(t('model.maxPromptTokensLabel'), 'maxPromptTokens', { step: '1024', min: '0', max: '2000000' }, t('model.maxPromptTokensHint')),
+      advancedNumber(t('model.memoryStepsLabel'), 'memorySteps', { step: '1', min: '1', max: '20' }, t('model.memoryStepsHint')),
     ),
-    h('div', { className: 'bg-sec' }, '战术交流与备忘'),
+    h('div', { className: 'bg-sec' }, t('model.sectionChat')),
     h('div', { className: 'bg-grid-2' },
-      advancedSelect('战术交流 chatEnabled', [
-        { value: 'true', label: '开启' },
-        { value: 'false', label: '关闭' },
-      ], String(f.chatEnabled !== false), (e) => { f.chatEnabled = e.target.value === 'true' }, '关闭后不会调用讨论模型，也不会注入战术备忘'),
-      advancedNumber('备忘软上限 chatNotesMax', 'chatNotesMax', { step: '1', min: '4', max: '100' }, '超过后触发记忆压缩'),
-      advancedNumber('单条发言上限 chatMaxChars', 'chatMaxChars', { step: '50', min: '50', max: '5000' }, '玩家单条讨论的字数上限'),
-      advancedNumber('讨论窗口 chatWindow', 'chatWindow', { step: '1', min: '2', max: '100' }, '注入讨论提示词的最近聊天条数'),
-      advancedNumber('回复冷却 chatReplyCooldownMs (ms)', 'chatReplyCooldownMs', { step: '500', min: '0', max: '60000' }, 'AI 每次回复后的冷却时间：冷却内的连续发言只记录，不逐条排队回复；0 表示关闭'),
+      advancedSelect(t('model.chatEnabledLabel'), [
+        { value: 'true', label: t('model.chatOn') },
+        { value: 'false', label: t('model.chatOff') },
+      ], String(f.chatEnabled !== false), (e) => { f.chatEnabled = e.target.value === 'true' }, t('model.chatEnabledHint')),
+      advancedNumber(t('model.chatNotesMaxLabel'), 'chatNotesMax', { step: '1', min: '4', max: '100' }, t('model.chatNotesMaxHint')),
+      advancedNumber(t('model.chatMaxCharsLabel'), 'chatMaxChars', { step: '50', min: '50', max: '5000' }, t('model.chatMaxCharsHint')),
+      advancedNumber(t('model.chatWindowLabel'), 'chatWindow', { step: '1', min: '2', max: '100' }, t('model.chatWindowHint')),
+      advancedNumber(t('model.chatCooldownLabel'), 'chatReplyCooldownMs', { step: '500', min: '0', max: '60000' }, t('model.chatCooldownHint')),
     )
   )
 
   return h('div', null,
-    h('p', { className: 'bg-desc' }, '配置大模型后端（OpenAI 兼容 /chat/completions 接口，支持 OpenAI / DeepSeek / Ollama 等）。保存后写入 boardgame.config.json。'),
-    env.length ? h('div', { className: 'bg-model-result err' }, '⚠️ 以下字段正被环境变量覆盖，界面保存不会改变实际生效值：' + env.join('、')) : null,
+    h('p', { className: 'bg-desc' }, t('model.desc')),
+    env.length ? h('div', { className: 'bg-model-result err' }, t('model.envOverrides', { fields: env.join(t('common.listSeparator')) })) : null,
     h('div', { className: 'bg-field-hint', style: { marginBottom: '14px' } }, currentBudget),
     h('div', { className: 'bg-field' },
-      h('label', null, 'API 地址'),
-      input(f.baseUrl, (e) => { f.baseUrl = e.target.value }, { 'aria-label': 'API 地址', placeholder: 'https://api.deepseek.com/v1', spellcheck: 'false' }),
-      h('div', { className: 'bg-field-hint' }, '会拼接到 /chat/completions；Ollama 用 http://localhost:11434/v1。')
+      h('label', null, t('model.apiUrlLabel')),
+      input(f.baseUrl, (e) => { f.baseUrl = e.target.value }, { 'aria-label': t('model.apiUrlLabel'), placeholder: 'https://api.deepseek.com/v1', spellcheck: 'false' }),
+      h('div', { className: 'bg-field-hint' }, t('model.apiUrlHint'))
     ),
     h('div', { className: 'bg-field' },
-      h('label', null, 'API 密钥'),
+      h('label', null, t('model.apiKeyLabel')),
       h('div', { className: 'bg-model-row' },
         input(f.apiKey, (e) => { f.apiKey = e.target.value }, {
-          'aria-label': 'API 密钥',
+          'aria-label': t('model.apiKeyLabel'),
           type: f.showKey ? 'text' : 'password',
-          placeholder: cfg.hasKey ? '已配置密钥（留空保持不变）' : 'sk-...',
+          placeholder: cfg.hasKey ? t('model.apiKeyPlaceholder') : 'sk-...',
           autocomplete: 'off', spellcheck: 'false',
         }),
-        h('button', { className: 'bg-btn secondary bg-key-toggle', type: 'button', title: f.showKey ? '隐藏密钥' : '显示密钥', onclick: () => { f.showKey = !f.showKey; render() } }, f.showKey ? '🙈' : '👁')
+        h('button', { className: 'bg-btn secondary bg-key-toggle', type: 'button', title: f.showKey ? t('model.hideKey') : t('model.showKey'), onclick: () => { f.showKey = !f.showKey; render() } }, f.showKey ? '🙈' : '👁')
       )
     ),
     h('div', { className: 'bg-field' },
-      h('label', null, '模型'),
+      h('label', null, t('model.modelLabel')),
       h('div', { className: 'bg-model-row' },
-        input(f.model, (e) => { f.model = e.target.value }, { 'aria-label': '模型', list: listId, placeholder: 'deepseek-flash', spellcheck: 'false' }),
-        h('button', { className: 'bg-btn secondary', type: 'button', disabled: !!busy, style: { flex: 'none' }, onclick: fetchModelList }, busy === 'models' ? '获取中…' : '🔄 获取模型列表')
+        input(f.model, (e) => { f.model = e.target.value }, { 'aria-label': t('model.modelLabel'), list: listId, placeholder: 'deepseek-flash', spellcheck: 'false' }),
+        h('button', { className: 'bg-btn secondary', type: 'button', disabled: !!busy, style: { flex: 'none' }, onclick: fetchModelList }, busy === 'models' ? t('model.fetching') : t('model.fetchList'))
       ),
       h('datalist', { id: listId }, state.modelList.map((m) => h('option', { value: m }))),
       state.modelList.length
         ? selectBox(
-            [{ value: '', label: '选择已获取的模型（' + state.modelList.length + '）' }]
+            [{ value: '', label: t('model.pickModel', { count: state.modelList.length }) }]
               .concat(state.modelList.map((model) => ({ value: model, label: model }))),
             state.modelList.includes(f.model) ? f.model : '',
             (e) => { if (e.target.value) { f.model = e.target.value; render() } }
@@ -1054,8 +1216,8 @@ function renderModelTab() {
     advanced,
     result,
     h('div', { className: 'bg-modal-foot', style: { marginTop: '16px' } },
-      h('button', { className: 'bg-btn secondary', type: 'button', disabled: !!busy, onclick: testModelConnection }, busy === 'test' ? '测试中…' : '🔍 测试连接'),
-      h('button', { className: 'bg-btn', type: 'button', disabled: !!busy, onclick: saveModelConfig }, busy === 'save' ? '保存中…' : '💾 保存')
+      h('button', { className: 'bg-btn secondary', type: 'button', disabled: !!busy, onclick: testModelConnection }, busy === 'test' ? t('model.testing') : t('model.test')),
+      h('button', { className: 'bg-btn', type: 'button', disabled: !!busy, onclick: saveModelConfig }, busy === 'save' ? t('model.saving') : t('model.save'))
     )
   )
 }
@@ -1066,7 +1228,7 @@ async function testModelConnection() {
     const r = await api('POST', '/config/test', modelPayload())
     state.modelResult = { ok: true, reply: r.test.reply, latencyMs: r.test.latencyMs }
   } catch (e) {
-    state.modelResult = { ok: false, error: String(e.message) }
+    state.modelResult = { ok: false, error: errorText(e) }
   }
   state.modelBusy = null; render()
 }
@@ -1078,10 +1240,10 @@ async function fetchModelList() {
     const r = await api('POST', '/config/models', modelPayload())
     state.modelList = r.models || []
     state.modelResult = state.modelList.length
-      ? { ok: true, reply: '已获取 ' + state.modelList.length + ' 个模型，请在下拉列表中选择' }
-      : { ok: false, error: '未获取到任何模型' }
+      ? { ok: true, reply: t('model.fetched', { count: state.modelList.length }) }
+      : { ok: false, error: t('model.noModels') }
   } catch (e) {
-    state.modelResult = { ok: false, error: String(e.message) }
+    state.modelResult = { ok: false, error: errorText(e) }
   }
   state.modelBusy = null; render()
 }
@@ -1093,9 +1255,9 @@ async function saveModelConfig() {
     const r = await api('POST', '/config', modelPayload())
     state.config = r
     state.modelForm = null
-    state.modelResult = { ok: true, reply: '已保存' }
+    state.modelResult = { ok: true, reply: t('model.saved') }
   } catch (e) {
-    state.modelResult = { ok: false, error: String(e.message) }
+    state.modelResult = { ok: false, error: errorText(e) }
   }
   state.modelBusy = null; render()
 }
@@ -1112,7 +1274,7 @@ async function loadStats() {
   try {
     state.statsData = await api('GET', '/agent-stats')
   } catch (e) {
-    state.statsError = String(e.message)
+    state.statsError = errorText(e)
   }
   state.statsBusy = false
   render()
@@ -1126,20 +1288,21 @@ async function resetAgentStats() {
     state.statsData = await api('GET', '/agent-stats?reset=1')
     state.statsError = null
   } catch (e) {
-    state.statsError = String(e.message)
+    state.statsError = errorText(e)
   }
   state.statsBusy = false
   render()
 }
 
+// 决策结果标签是展示文案，做成函数延迟到渲染时取当前语言。
 const OUTCOME_LABEL = {
-  ok: '✅ 成功',
-  parseError: '⚠️ 解析失败',
-  validateError: '🚫 非法行动',
-  callError: '📡 调用失败',
-  fallback: '🛟 兜底（本地引擎）',
-  noKeyFallback: '🛟 兜底（未配置模型·本地引擎）',
-  stall: '⛔ 中止',
+  ok: () => t('stats.outcome.ok'),
+  parseError: () => t('stats.outcome.parseError'),
+  validateError: () => t('stats.outcome.validateError'),
+  callError: () => t('stats.outcome.callError'),
+  fallback: () => t('stats.outcome.fallback'),
+  noKeyFallback: () => t('stats.outcome.noKeyFallback'),
+  stall: () => t('stats.outcome.stall'),
 }
 
 function pctText(value) { return value == null ? '—' : (Number(value) * 100).toFixed(1) + '%' }
@@ -1155,62 +1318,68 @@ function statCell(label, value, hint) {
 
 function renderStatsTab() {
   const d = state.statsData
-  const head = h('p', { className: 'bg-desc' },
-    '每次模型调用都会写入决策日志，并在这里聚合为可观测指标。「清空计数」只重置进程内计数，不删除 decisions.jsonl 历史。')
+  const head = h('p', { className: 'bg-desc' }, t('stats.desc'))
   if (!d) {
     return h('div', null, head,
       state.statsError ? h('div', { className: 'bg-model-result err' }, '❌ ' + state.statsError) : null,
-      h('div', { className: 'bg-empty' }, state.statsBusy ? '读取中…' : '点击右下角「刷新」读取指标。'))
+      h('div', { className: 'bg-empty' }, state.statsBusy ? t('stats.loading') : t('stats.empty')))
   }
-  const t = d.totals || {}
+  const totals = d.totals || {}
   const mods = Object.entries(d.byMod || {})
   const recent = d.recent || []
   return h('div', null,
     head,
     state.statsError ? h('div', { className: 'bg-model-result err' }, '❌ ' + state.statsError) : null,
     h('div', { className: 'bg-stats-grid' },
-      statCell('模型调用', t.calls || 0),
-      statCell('AI 回合', t.turns || 0),
-      statCell('非法行动率', pctText(t.illegalRate), (t.validateError || 0) + ' 次被打回'),
-      statCell('兜底率', pctText(t.fallbackRate), ((t.fallback || 0) + (t.noKeyFallback || 0)) + ' 次未用模型'),
-      statCell('超预算率', pctText(t.overBudgetRate), (t.overBudget || 0) + ' 次超 token 预算'),
-      statCell('回合超时', t.turnTimeouts || 0, '墙钟预算中止'),
-      statCell('平均延迟', msText(t.avgLatencyMs)),
-      statCell('平均提示词', (t.avgPromptChars || 0) + ' 字', '≈ ' + (t.avgPromptTokensEst || 0) + ' token'),
-      statCell('累计输入 token', t.promptTokensEst || 0, '本地估算 · 后端回报 ' + (t.promptTokens || 0))
+      statCell(t('stats.calls'), totals.calls || 0),
+      statCell(t('stats.turns'), totals.turns || 0),
+      statCell(t('stats.illegalRate'), pctText(totals.illegalRate), t('stats.illegalHint', { count: totals.validateError || 0 })),
+      statCell(t('stats.fallbackRate'), pctText(totals.fallbackRate), t('stats.fallbackHint', { count: (totals.fallback || 0) + (totals.noKeyFallback || 0) })),
+      statCell(t('stats.overBudgetRate'), pctText(totals.overBudgetRate), t('stats.overBudgetHint', { count: totals.overBudget || 0 })),
+      statCell(t('stats.turnTimeouts'), totals.turnTimeouts || 0, t('stats.turnTimeoutsHint')),
+      statCell(t('stats.avgLatency'), msText(totals.avgLatencyMs)),
+      statCell(t('stats.avgPrompt'), t('stats.avgPromptChars', { count: totals.avgPromptChars || 0 }), t('stats.avgPromptHint', { tokens: totals.avgPromptTokensEst || 0 })),
+      statCell(t('stats.promptTokens'), totals.promptTokensEst || 0, t('stats.promptTokensHint', { reported: totals.promptTokens || 0 }))
     ),
-    h('div', { className: 'bg-sec' }, '按桌游'),
-    mods.length === 0 ? h('div', { className: 'bg-empty' }, '还没有 AI 决策记录。') : h('div', { className: 'bg-stats-mods' },
+    h('div', { className: 'bg-sec' }, t('stats.byMod')),
+    mods.length === 0 ? h('div', { className: 'bg-empty' }, t('stats.noRecords')) : h('div', { className: 'bg-stats-mods' },
       mods.map(([id, m]) => h('div', { className: 'bg-stats-mod' },
         h('span', { className: 'bg-stats-mod-name' }, id),
-        h('span', null, (m.calls || 0) + ' 次调用 · ' + (m.turns || 0) + ' 回合 · 平均 ' + (m.avgStepsPerTurn || 0) + ' 步/回合 · 兜底 ' + (m.fallback || 0) + ' · 非法 ' + (m.validateError || 0) + ' · ' + msText(m.avgLatencyMs))
+        h('span', null, t('stats.modLine', {
+          calls: m.calls || 0,
+          turns: m.turns || 0,
+          steps: m.avgStepsPerTurn || 0,
+          fallback: m.fallback || 0,
+          illegal: m.validateError || 0,
+          latency: msText(m.avgLatencyMs),
+        }))
       ))
     ),
-    h('div', { className: 'bg-sec' }, '最近决策'),
-    recent.length === 0 ? h('div', { className: 'bg-empty' }, '暂无记录。') : h('div', { className: 'bg-decisions' },
+    h('div', { className: 'bg-sec' }, t('stats.recent')),
+    recent.length === 0 ? h('div', { className: 'bg-empty' }, t('stats.recentEmpty')) : h('div', { className: 'bg-decisions' },
       recent.map((entry) => h('div', { className: 'bg-decision' },
         h('div', { className: 'bg-decision-head' },
-          h('span', { className: 'bg-decision-outcome' }, (OUTCOME_LABEL[entry.outcome] || entry.outcome || entry.kind || '记录') + (entry.reason ? '（' + entry.reason + '）' : '')),
+          h('span', { className: 'bg-decision-outcome' }, (OUTCOME_LABEL[entry.outcome]?.() || entry.outcome || entry.kind || t('stats.record')) + (entry.reason ? t('stats.reasonSuffix', { reason: entry.reason }) : '')),
           h('span', { className: 'bg-decision-meta' },
             [entry.modId, entry.aiName, entry.model,
               entry.latencyMs != null ? entry.latencyMs + 'ms' : null,
               entry.promptTokensEst != null ? '≈' + entry.promptTokensEst + 'tk' : null,
-              entry.promptOverBudget ? '⚠️ 超预算' : null].filter(Boolean).join(' · '))
+              entry.promptOverBudget ? t('stats.overBudgetTag') : null].filter(Boolean).join(' · '))
         ),
-        entry.error ? h('div', { className: 'bg-decision-line err' }, '错误：' + entry.error) : null,
-        entry.move ? h('div', { className: 'bg-decision-line' }, '行动：' + JSON.stringify(entry.move)) : null,
-        entry.replyExcerpt ? h('div', { className: 'bg-decision-line dim' }, '输出：' + entry.replyExcerpt) : null
+        entry.error ? h('div', { className: 'bg-decision-line err' }, t('stats.errorPrefix', { error: entry.error })) : null,
+        entry.move ? h('div', { className: 'bg-decision-line' }, t('stats.movePrefix', { move: JSON.stringify(entry.move) })) : null,
+        entry.replyExcerpt ? h('div', { className: 'bg-decision-line dim' }, t('stats.replyPrefix', { reply: entry.replyExcerpt })) : null
       ))
     ),
     h('div', { className: 'bg-modal-foot' },
-      h('button', { className: 'bg-btn danger', type: 'button', disabled: state.statsBusy, onclick: resetAgentStats }, state.statsBusy ? '处理中…' : '🧹 清空计数'),
-      h('button', { className: 'bg-btn secondary', type: 'button', disabled: state.statsBusy, onclick: loadStats }, '🔄 刷新')
+      h('button', { className: 'bg-btn danger', type: 'button', disabled: state.statsBusy, onclick: resetAgentStats }, state.statsBusy ? t('common.processing') : t('stats.clear')),
+      h('button', { className: 'bg-btn secondary', type: 'button', disabled: state.statsBusy, onclick: loadStats }, t('common.refresh'))
     )
   )
 }
 
 function aiMetaText(ai) {
-  return ai.persona || '未设定人设'
+  return ai.persona || t('ai.noPersona')
 }
 
 function renderAiEditor(ai) {
@@ -1229,28 +1398,28 @@ function renderAiEditor(ai) {
   const personaEl = h('textarea', {
     className: 'bg-input',
     style: { minHeight: '140px', lineHeight: '1.6' },
-    placeholder: '用第二人称写扮演规则，如：你是墨玄子，沉稳老练……说话慢条斯理；落子先守后攻。',
+    placeholder: t('ai.personaPlaceholder'),
   })
   personaEl.value = draft.persona
   personaEl.addEventListener('input', (e) => { draft.persona = e.target.value })
 
   const avatarPreview = h('span', { className: 'bg-ai-avatar bg-ai-avatar-preview', style: { background: draft.color } }, avatarContent(draft.avatar))
-  const avatarHint = h('div', { className: 'bg-field-hint' }, isImageAvatar(draft.avatar) ? '当前使用图片头像' : '可上传图片，或输入 emoji / 图片 URL')
-  const fileInput = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, 'aria-label': '上传 AI 头像' })
+  const avatarHint = h('div', { className: 'bg-field-hint' }, isImageAvatar(draft.avatar) ? t('ai.avatarImage') : t('ai.avatarHint'))
+  const fileInput = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, 'aria-label': t('ai.uploadAvatarAria') })
   const avatarText = textInput(isImageAvatar(draft.avatar) ? '' : draft.avatar, (e) => {
     draft.avatar = e.target.value
     syncAvatar(true)
-  }, { style: { width: '80px', flex: 'none' }, placeholder: 'emoji / URL', 'aria-label': 'AI 头像' })
+  }, { style: { width: '80px', flex: 'none' }, placeholder: t('ai.avatarPlaceholder'), 'aria-label': t('ai.avatarAria') })
   const colorInput = textInput(draft.color, (e) => {
     draft.color = e.target.value
     avatarPreview.style.background = draft.color
-  }, { type: 'color', style: { width: '46px', flex: 'none', padding: '2px' }, 'aria-label': 'AI 头像底色' })
+  }, { type: 'color', style: { width: '46px', flex: 'none', padding: '2px' }, 'aria-label': t('ai.colorAria') })
 
   function syncAvatar(keepInputValue) {
     avatarPreview.replaceChildren(avatarContent(draft.avatar))
     avatarPreview.style.background = draft.color
     const image = isImageAvatar(draft.avatar)
-    avatarHint.textContent = image ? '当前使用图片头像' : '可上传图片，或输入 emoji / 图片 URL'
+    avatarHint.textContent = image ? t('ai.avatarImage') : t('ai.avatarHint')
     avatarText.value = image && !keepInputValue ? '' : draft.avatar
   }
 
@@ -1258,7 +1427,7 @@ function renderAiEditor(ai) {
     const file = e.target.files && e.target.files[0]
     e.target.value = ''
     if (!file) return
-    avatarHint.textContent = '正在处理图片…'
+    avatarHint.textContent = t('ai.processingImage')
     try {
       draft.avatar = await fileToAvatar(file)
       syncAvatar()
@@ -1268,13 +1437,13 @@ function renderAiEditor(ai) {
   })
 
   const form = h('div', null,
-    h('div', { className: 'bg-sec' }, '外观'),
+    h('div', { className: 'bg-sec' }, t('ai.sectionAppearance')),
     h('div', { className: 'bg-avatar-edit' },
       avatarPreview,
       h('div', { className: 'bg-avatar-edit-body' },
         h('div', { className: 'bg-avatar-actions' },
-          h('button', { type: 'button', className: 'bg-btn secondary', onclick: () => fileInput.click() }, '上传图片'),
-          h('button', { type: 'button', className: 'bg-btn secondary', onclick: () => { draft.avatar = '🤖'; syncAvatar() } }, '使用 emoji')
+          h('button', { type: 'button', className: 'bg-btn secondary', onclick: () => fileInput.click() }, t('ai.uploadImage')),
+          h('button', { type: 'button', className: 'bg-btn secondary', onclick: () => { draft.avatar = '🤖'; syncAvatar() } }, t('ai.useEmoji'))
         ),
         avatarHint,
         fileInput
@@ -1282,24 +1451,24 @@ function renderAiEditor(ai) {
     ),
     h('div', { className: 'bg-row-3' },
       avatarText,
-      textInput(draft.name, (e) => { draft.name = e.target.value }, { style: { flex: 1 }, placeholder: '名字' }),
+      textInput(draft.name, (e) => { draft.name = e.target.value }, { style: { flex: 1 }, placeholder: t('ai.namePlaceholder') }),
       colorInput
     ),
-    h('div', { className: 'bg-sec' }, '人设'),
+    h('div', { className: 'bg-sec' }, t('ai.sectionPersona')),
     h('div', { className: 'bg-field' },
-      h('label', null, '这段文字会直接作为 system prompt，决定 AI 怎么下棋、怎么说话'),
+      h('label', null, t('ai.personaLabel')),
       personaEl
     )
   )
 
   return h('div', { className: 'bg-backdrop' },
     h('div', { className: 'bg-modal', onclick: (e) => e.stopPropagation() },
-      h('h2', null, '✏️ 编辑 AI · ' + draft.name),
-      h('p', { className: 'bg-desc' }, '人设会被原样注入模型的 system prompt，越具体扮演越稳；留空则用默认人设。'),
+      h('h2', null, t('ai.editorTitle', { name: draft.name })),
+      h('p', { className: 'bg-desc' }, t('ai.editorDesc')),
       form,
       h('div', { className: 'bg-modal-foot' },
-        h('button', { className: 'bg-btn secondary', onclick: () => { state.aiEdit = null; render() } }, '取消'),
-        h('button', { className: 'bg-btn', disabled: state.busy, onclick: () => saveAi(draft) }, state.busy ? '保存中…' : '保存')
+        h('button', { className: 'bg-btn secondary', onclick: () => { state.aiEdit = null; render() } }, t('common.cancel')),
+        h('button', { className: 'bg-btn', disabled: state.busy, onclick: () => saveAi(draft) }, state.busy ? t('common.saving') : t('common.save'))
       )
     )
   )
@@ -1311,7 +1480,7 @@ async function saveAi(draft) {
     const r = await api('POST', '/ais', { ai: draft })
     state.ais = r.ais || []
     state.aiEdit = null
-  } catch (e) { state.error = String(e.message) }
+  } catch (e) { state.error = errorText(e) }
   state.busy = false; render()
 }
 
@@ -1319,11 +1488,11 @@ async function createAi() {
   state.busy = true; render()
   try {
     const r = await api('POST', '/ais', {
-      ai: { name: '新 AI', avatar: '🤖', color: '#8a8a8a', persona: '' },
+      ai: { name: t('ai.defaultName'), avatar: '🤖', color: '#8a8a8a', persona: '' },
     })
     state.ais = r.ais || []
     state.aiEdit = r.saved
-  } catch (e) { state.error = String(e.message) }
+  } catch (e) { state.error = errorText(e) }
   state.busy = false; render()
 }
 
@@ -1332,7 +1501,7 @@ async function deleteAi(id) {
   try {
     const r = await api('POST', '/ais/delete', { id })
     state.ais = r.ais || []
-  } catch (e) { state.error = String(e.message) }
+  } catch (e) { state.error = errorText(e) }
   state.busy = false; render()
 }
 
@@ -1348,10 +1517,13 @@ function modGameUnavailable(game, session) {
 
 function renderGameUnavailable(game, session) {
   const detail = modErrors.get(game.id)
+  const name = localizedModName(session.modId, session.modName)
   return h('div', { className: 'bg-empty' },
-    h('p', { role: 'alert' }, '「' + session.modName + '」的界面加载失败' + (detail ? '：' + detail : '。')),
-    h('p', null, '游戏文件可能缺失、版本过旧，或浏览器仍在使用旧缓存。刷新页面后若仍失败，请重新安装该游戏。'),
-    h('button', { className: 'bg-btn secondary', onclick: leave }, '返回大厅'))
+    h('p', { role: 'alert' }, detail
+      ? t('game.uiFailedWithDetail', { game: name, error: detail })
+      : t('game.uiFailedPlain', { game: name })),
+    h('p', null, t('game.uiFailedHint')),
+    h('button', { className: 'bg-btn secondary', onclick: leave }, t('game.backToLibrary')))
 }
 
 function renderGame(s) {
@@ -1361,31 +1533,32 @@ function renderGame(s) {
   if (custom) return custom
   if (modGameUnavailable(game, s)) return renderGameUnavailable(game, s)
   if (modUiPending(game)) loadModUi(game)
+  const modName = localizedModName(s.modId, s.modName)
   if (modUiPending(game) || (s.render && s.render.kind !== 'board')) {
-    return h('div', { className: 'bg-empty' }, '正在加载「' + s.modName + '」的界面…')
+    return h('div', { className: 'bg-empty' }, t('game.loadingUi', { game: modName }))
   }
   const over = s.state.status !== 'playing'
   const current = s.players[s.state.currentSeat]
   const pieceStyle = (s.render && s.render.pieceStyle) || 'stone'
   const sideLabel = pieceStyle === 'mark'
     ? (c) => (c === 'black' ? 'X' : 'O')
-    : (c) => (c === 'black' ? '黑' : '白')
+    : (c) => (c === 'black' ? t('game.sideBlack') : t('game.sideWhite'))
   let statusText
-  if (s.state.status === 'over') statusText = s.state.winnerSeat != null ? s.players[s.state.winnerSeat].name + ' 获胜' : '平局'
+  if (s.state.status === 'over') statusText = s.state.winnerSeat != null ? t('game.winner', { name: s.players[s.state.winnerSeat].name }) : t('game.draw')
   else statusText = current.seat === (s.mySeat ?? 0)
-    ? '轮到你落子（' + sideLabel(current.color) + '）'
-    : current.name + (current.role === 'ai' ? ' 思考中…' : ' 落子中…')
+    ? t('game.yourTurn', { side: sideLabel(current.color) })
+    : (current.role === 'ai' ? t('game.aiThinking', { name: current.name }) : t('game.opponentMoving', { name: current.name }))
 
   const speeches = (s.events || []).filter((e) => e.type === 'speech').slice(-5).reverse()
 
   return h('div', { className: 'bg-game' },
     h('div', { className: 'bg-game-head' },
-      h('div', { className: 'bg-game-title' }, s.modName),
+      h('div', { className: 'bg-game-title' }, modName),
       h('div', { className: 'bg-game-status' + (over ? ' bg-over' : '') }, statusText),
       h('div', { className: 'bg-game-actions' },
         feedbackUi.iconButton(),
-        h('button', { className: 'bg-btn secondary', disabled: s.online && s.mySeat !== 0, onclick: reset }, '再来一局'),
-        h('button', { className: 'bg-btn secondary', onclick: leave }, '退出')
+        h('button', { className: 'bg-btn secondary', disabled: s.online && s.mySeat !== 0, onclick: reset }, t('game.playAgain')),
+        h('button', { className: 'bg-btn secondary', onclick: leave }, t('game.leave'))
       )
     ),
     h('div', { className: 'bg-game-body' },
@@ -1395,7 +1568,7 @@ function renderGame(s) {
       speeches.length > 0 ? h('div', { className: 'bg-speeches' }, speeches.map((e) => {
         const p = s.players[e.seat]
         return h('div', { className: 'bg-speech' },
-          h('span', { className: 'bg-speech-name', style: { color: p.colorHex } }, p.name + '：'),
+          h('span', { className: 'bg-speech-name', style: { color: p.colorHex } }, t('game.speechName', { name: p.name })),
           h('span', { className: 'bg-speech-text' }, e.text)
         )
       })) : null,
@@ -1488,7 +1661,7 @@ async function move(x, y) {
   } catch (e) {
     // 服务端拒绝时回滚到服务端返回的最新状态（或落子前状态）。
     state.session = e.session || original
-    state.error = String(e.message)
+    state.error = errorText(e)
   }
   state.busy = false; render()
 }
@@ -1520,7 +1693,7 @@ async function retryAi() {
   } catch (e) {
     if (state.session?.sessionId === session.sessionId) {
       if (e.session) state.session = e.session
-      state.error = String(e.message)
+      state.error = errorText(e)
     }
   } finally {
     waiting = false
@@ -1537,13 +1710,13 @@ async function reset() {
     const r = await api('POST', '/reset', { sessionId: state.session.sessionId })
     state.session = r.session
     rememberSession(r.session.sessionId)
-  } catch (e) { state.error = String(e.message) }
+  } catch (e) { state.error = errorText(e) }
   state.busy = false; render()
 }
 
 function leave() {
   if (state.online?.room) {
-    onlineUi.leave().catch(error => { state.error = error.message; render() })
+    onlineUi.leave().catch(error => { state.error = errorText(error); render() })
     return
   }
   if (state.session && !state.session.lifecycle?.retainOnLeave) {
@@ -1568,7 +1741,7 @@ function leave() {
 
 function chatSeatName(session, seat) {
   const player = session.players.find((item) => item.seat === seat)
-  return player && player.name ? player.name : '座位' + seat
+  return player && player.name ? player.name : t('chat.seatName', { seat })
 }
 
 function resetChatState() {
@@ -1578,7 +1751,7 @@ function resetChatState() {
 
 function chatAvatar(session, seat) {
   const player = session.players.find(item => item.seat === seat)
-  return h('span', { className: 'bg-chat-avatar', role: 'img', 'aria-label': chatSeatName(session, seat) + '的头像' },
+  return h('span', { className: 'bg-chat-avatar', role: 'img', 'aria-label': t('chat.avatarAria', { name: chatSeatName(session, seat) }) },
     avatarContent(player?.avatar || player?.name?.slice(0,1) || '👤'))
 }
 
@@ -1616,24 +1789,24 @@ function renderTacticalChat(session) {
   const surface = h('div', { className: 'bg-chat-surface' })
   const openChannel = channel => { state.chat.channel = channel; state.chat.open = true; resetChatState(); render() }
   if (notifications.toasts.length) {
-    surface.append(h('div', { className: 'bg-chat-toasts', role: 'status', 'aria-live': 'polite', 'aria-label': '新聊天消息' },
+    surface.append(h('div', { className: 'bg-chat-toasts', role: 'status', 'aria-live': 'polite', 'aria-label': t('chat.newMessagesAria') },
       notifications.toasts.map(({event}) => h('div', { className: 'bg-chat-toast', 'data-chat-seq': event.seq },
-        h('button', { className: 'bg-chat-toast-open', onclick: () => openChannel(chatChannel(event, session.mySeat ?? 0)), 'aria-label': '查看 ' + chatSeatName(session,event.seat) + ' 的消息' },
+        h('button', { className: 'bg-chat-toast-open', onclick: () => openChannel(chatChannel(event, session.mySeat ?? 0)), 'aria-label': t('chat.viewMessageAria', { name: chatSeatName(session,event.seat) }) },
           chatAvatar(session,event.seat), h('span', { className: 'bg-chat-toast-copy' },
-            h('strong', {}, chatSeatName(session,event.seat), event.to == null ? '' : ' · 私聊'), h('span', {}, event.text))),
-        h('button', { className: 'bg-chat-toast-close', 'aria-label': '关闭消息气泡', onclick: () => { chatNotifications.dismiss(session.sessionId,event.seq); refreshChatSurface() } }, '×')))))
+            h('strong', {}, chatSeatName(session,event.seat), event.to == null ? '' : t('chat.privateSuffix')), h('span', {}, event.text))),
+        h('button', { className: 'bg-chat-toast-close', 'aria-label': t('chat.closeToastAria'), onclick: () => { chatNotifications.dismiss(session.sessionId,event.seq); refreshChatSurface() } }, '×')))))
     chatToastTimer = setTimeout(refreshChatSurface, Math.max(1, Math.min(...notifications.toasts.map(t => t.expires)) - Date.now()))
   }
   if (!state.chat.open) {
     surface.append(h('button', {
       className: 'bg-chat-fab',
-      title: notifications.total ? `${notifications.total} 条未读消息` : '战术讨论',
-      'aria-label': '打开战术讨论', 'aria-description': notifications.total ? `${notifications.total} 条未读消息` : '没有未读消息',
+      title: notifications.total ? t('chat.unreadTitle', { count: notifications.total }) : t('chat.title'),
+      'aria-label': t('chat.openAria'), 'aria-description': notifications.total ? t('chat.unreadTitle', { count: notifications.total }) : t('chat.noUnread'),
       onclick: () => { state.chat.open = true; resetChatState(); render() },
-    }, '💬', notifications.total ? h('span', { className: 'bg-chat-unread', 'aria-label': `${notifications.total} 条未读消息` }, notifications.total > 99 ? '99+' : notifications.total) : null))
+    }, '💬', notifications.total ? h('span', { className: 'bg-chat-unread', 'aria-label': t('chat.unreadTitle', { count: notifications.total }) }, notifications.total > 99 ? '99+' : notifications.total) : null))
     return surface
   }
-  surface.append(h('div', { className: 'bg-chat-drawer', role: 'dialog', 'aria-label': '战术讨论' },
+  surface.append(h('div', { className: 'bg-chat-drawer', role: 'dialog', 'aria-label': t('chat.title') },
     renderChatHead(session, notifications.unread),
     renderChatNotes(session),
     renderChatList(session),
@@ -1653,13 +1826,13 @@ function renderChatHead(session, unread = {}) {
   }, label, unread[value] ? h('span', { className: 'bg-chat-tab-unread' }, unread[value]) : null)
   return h('div', { className: 'bg-chat-head' },
     h('div', { className: 'bg-chat-tabs' },
-      channelBtn('table', '📣 公开桌聊', '所有玩家都能看到'),
-      ...ais.map((player) => channelBtn(String(player.seat), '🔒 ' + player.name, '只有这位队友能看到'))
+      channelBtn('table', t('chat.tabTable'), t('chat.tabTableTitle')),
+      ...ais.map((player) => channelBtn(String(player.seat), t('chat.tabPrivate', { name: player.name }), t('chat.tabPrivateTitle')))
     ),
     h('button', {
       className: 'bg-chat-close',
-      title: '收起',
-      'aria-label': '收起战术讨论',
+      title: t('chat.collapse'),
+      'aria-label': t('chat.collapseAria'),
       onclick: () => { state.chat.open = false; render() },
     }, '✕')
   )
@@ -1673,26 +1846,26 @@ function renderChatNotes(session) {
   const readOnly = !!session.online
   const head = h('button', {
     className: 'bg-chat-notes-head',
-    'aria-label': '展开或收起战术备忘',
+    'aria-label': t('chat.notesToggleAria'),
     onclick: () => { state.chat.notesOpen = !open; render() },
-  }, '🧠 本局备忘（' + notes.length + '/' + max + '）' + (open ? ' ▾' : ' ▸'))
+  }, t('chat.notesHead', { used: notes.length, max }) + (open ? ' ▾' : ' ▸'))
   if (!open) return h('div', { className: 'bg-chat-notes' }, head)
 
   const body = h('div', { className: 'bg-chat-notes-body' })
   if (!notes.length) {
-    body.append(h('div', { className: 'bg-chat-empty' }, '还没有战术备忘。试试说「记住，以后先推进主线」，或输入 /备忘 <内容>。'))
+    body.append(h('div', { className: 'bg-chat-empty' }, t('chat.notesEmpty')))
   }
   for (const note of notes) {
     body.append(h('div', { className: 'bg-chat-note' },
-      h('span', { className: 'bg-chat-note-scope' }, note.scope === 'seat' ? ('🔒 ' + chatSeatName(session, note.seat)) : '队伍'),
+      h('span', { className: 'bg-chat-note-scope' }, note.scope === 'seat' ? t('chat.tabPrivate', { name: chatSeatName(session, note.seat) }) : t('chat.scopeTeam')),
       h('span', { className: 'bg-chat-note-text' }, note.text),
-      readOnly ? null : h('button', { className: 'bg-chat-note-btn', title: '编辑', 'aria-label': '编辑备忘', onclick: () => editNote(note) }, '✏️'),
-      readOnly ? null : h('button', { className: 'bg-chat-note-btn', title: '删除', 'aria-label': '删除备忘', onclick: () => deleteNote(note.id) }, '🗑')
+      readOnly ? null : h('button', { className: 'bg-chat-note-btn', title: t('chat.editNoteTitle'), 'aria-label': t('chat.editNoteAria'), onclick: () => editNote(note) }, '✏️'),
+      readOnly ? null : h('button', { className: 'bg-chat-note-btn', title: t('chat.deleteNoteTitle'), 'aria-label': t('chat.deleteNoteAria'), onclick: () => deleteNote(note.id) }, '🗑')
     ))
   }
   body.append(readOnly
-    ? h('div', { className: 'bg-chat-note-hint' }, '用 /清除备忘 清空你能看到的备忘')
-    : h('button', { className: 'bg-btn secondary bg-chat-note-clear', onclick: clearNotes }, '清空本局记忆'))
+    ? h('div', { className: 'bg-chat-note-hint' }, t('chat.notesReadOnlyHint'))
+    : h('button', { className: 'bg-btn secondary bg-chat-note-clear', onclick: clearNotes }, t('chat.clearNotes')))
   return h('div', { className: 'bg-chat-notes' }, head, body)
 }
 
@@ -1713,11 +1886,11 @@ function renderChatList(session) {
       && chatMessageKey(event) === chatMessageKey(pending))) continue
     messages.push(pending)
   }
-  const list = h('div', { className: 'bg-chat-list', 'aria-label': '讨论记录' })
+  const list = h('div', { className: 'bg-chat-list', 'aria-label': t('chat.listAria') })
   if (!messages.length) {
     list.append(h('div', { className: 'bg-chat-empty' }, to === null
-      ? '还没有讨论。输入 @ 指定回复的队友、@全体 让所有人回应，输入 / 查看指令。'
-      : '还没有和这位队友私聊过。私聊内容其它 AI 看不到。'))
+      ? t('chat.emptyTable')
+      : t('chat.emptyPrivate')))
   }
   for (const event of messages) {
     const mine = event.seat === (session.mySeat ?? 0)
@@ -1730,8 +1903,8 @@ function renderChatList(session) {
         to === null ? null : h('span', { className: 'bg-chat-lock' }, '🔒'),
         mine && !event.pending ? h('button', {
           className: 'bg-chat-pin',
-          title: '钉住为战术备忘',
-          'aria-label': '钉住为战术备忘',
+          title: t('chat.pinTitle'),
+          'aria-label': t('chat.pinTitle'),
           onclick: () => pinChat(event),
         }, '📌') : null
       ),
@@ -1749,11 +1922,11 @@ function chatAiSeats(session) {
 
 function chatMentionOptions(session) {
   return [
-    { value: '@全体 ', label: '全体成员', hint: '所有 AI 队友都会回复', icon: '📣' },
+    { value: '@全体 ', label: t('chat.mentionAll'), hint: t('chat.mentionAllHint'), icon: '📣' },
     ...chatAiSeats(session).map((player) => ({
       value: '@' + player.name + ' ',
       label: player.name,
-      hint: '只有 ' + player.name + ' 会回复',
+      hint: t('chat.mentionOneHint', { name: player.name }),
       avatar: player.avatar,
     })),
   ]
@@ -1761,9 +1934,9 @@ function chatMentionOptions(session) {
 
 function chatCommandOptions() {
   const fallback = [
-    { usage: '/备忘 <内容>', summary: '把这句话记进本局战术备忘' },
-    { usage: '/清除备忘', summary: '清空本局全部战术备忘' },
-    { usage: '/help', summary: '查看可用聊天指令' },
+    { usage: '/备忘 <内容>', summary: t('chat.cmdRemember') },
+    { usage: '/清除备忘', summary: t('chat.cmdClear') },
+    { usage: '/help', summary: t('chat.cmdHelp') },
   ]
   const commands = (state.config && Array.isArray(state.config.chatCommands) && state.config.chatCommands.length)
     ? state.config.chatCommands : fallback
@@ -1802,7 +1975,7 @@ function mountChatSuggest(session, textarea, container, send) {
     active = Math.min(active, options.length - 1)
     container.hidden = false
     container.replaceChildren(
-      h('div', { className: 'bg-chat-suggest-title' }, context.kind === 'command' ? '指令' : '回复对象'),
+      h('div', { className: 'bg-chat-suggest-title' }, context.kind === 'command' ? t('chat.suggestCommands') : t('chat.suggestRecipients')),
       ...options.map((option, index) => h('button', {
         type: 'button',
         className: 'bg-chat-suggest-item' + (index === active ? ' is-active' : ''),
@@ -1847,7 +2020,7 @@ function renderChatStatus() {
   return h('div', { className: 'bg-chat-status' },
     state.chat.error ? h('div', { className: 'bg-chat-error' }, '⚠️ ' + state.chat.error) : null,
     state.chat.notice ? h('div', { className: 'bg-chat-notice' }, state.chat.notice) : null,
-    state.chat.pendings.length ? h('div', { className: 'bg-chat-pending-status', role: 'status' }, '队友正在回应…') : null
+    state.chat.pendings.length ? h('div', { className: 'bg-chat-pending-status', role: 'status' }, t('chat.pending')) : null
   )
 }
 
@@ -1857,16 +2030,16 @@ function renderChatCompose(session) {
     className: 'bg-chat-input',
     rows: 2,
     maxlength: maxChars,
-    'aria-label': '战术讨论输入',
-    placeholder: state.chat.channel === 'table' ? '和大家讨论战术…（Enter 发送，Shift+Enter 换行）' : '私聊这位队友…',
+    'aria-label': t('chat.inputAria'),
+    placeholder: state.chat.channel === 'table' ? t('chat.placeholderTable') : t('chat.placeholderPrivate'),
   })
   textarea.value = state.chat.draft || ''
-  const suggest = h('div', { className: 'bg-chat-suggest', role: 'listbox', 'aria-label': '聊天补全', hidden: true })
+  const suggest = h('div', { className: 'bg-chat-suggest', role: 'listbox', 'aria-label': t('chat.suggestAria'), hidden: true })
   const send = h('button', {
     className: 'bg-btn bg-chat-send',
     disabled: state.busy,
     onclick: () => sendChat(),
-  }, '发送')
+  }, t('chat.send'))
   const controller = mountChatSuggest(session, textarea, suggest, send)
   // 打字不触发全量重绘（否则光标会跳），只同步状态、补全弹层与发送按钮可用性
   textarea.addEventListener('input', () => {
@@ -1888,8 +2061,8 @@ function renderChatCompose(session) {
     suggest,
     h('div', { className: 'bg-chat-compose-row' }, textarea, send),
     h('div', { className: 'bg-chat-hint' }, chatAiSeats(session).length
-      ? '输入 @ 指定队友、@全体 让所有人回应；输入 / 使用指令。'
-      : '输入 / 使用指令。')
+      ? t('chat.hintMentions')
+      : t('chat.hintCommands'))
   )
 }
 
@@ -1964,23 +2137,23 @@ async function sendChat() {
     if (chat.warning) state.chat.notice = chat.warning
     if (chat.notice) state.chat.notice = chat.notice
     if (chat.skipped === 'inflight') {
-      state.chat.notice = 'AI 还在回应上一条，这条只记入讨论，不再排队回复。'
+      state.chat.notice = t('chat.noticeInflight')
     } else if (chat.skipped === 'cooldown') {
-      state.chat.notice = '连续发言只记录不逐条回复（冷却 ' + Math.ceil((chat.retryAfterMs || 0) / 1000) + ' 秒）。'
+      state.chat.notice = t('chat.noticeCooldown', { seconds: Math.ceil((chat.retryAfterMs || 0) / 1000) })
     }
-    if (chat.compacted) state.chat.notice = '记忆已自动压缩，精简 ' + chat.compacted + ' 条。'
+    if (chat.compacted) state.chat.notice = t('chat.noticeCompacted', { count: chat.compacted })
     else if (chat.notesAdded || chat.notesUpdated || chat.notesRemoved) {
       if (!chat.notice) {
         const parts = []
-        if (chat.notesAdded) parts.push('记住 ' + chat.notesAdded + ' 条')
-        if (chat.notesUpdated) parts.push('更新 ' + chat.notesUpdated + ' 条')
-        if (chat.notesRemoved) parts.push('忘记 ' + chat.notesRemoved + ' 条')
-        state.chat.notice = '已' + parts.join('、') + '（可在上方备忘里修改或删除）'
+        if (chat.notesAdded) parts.push(t('chat.noteAdded', { count: chat.notesAdded }))
+        if (chat.notesUpdated) parts.push(t('chat.noteUpdated', { count: chat.notesUpdated }))
+        if (chat.notesRemoved) parts.push(t('chat.noteRemoved', { count: chat.notesRemoved }))
+        state.chat.notice = t('chat.noticeNotes', { parts: parts.join(t('common.listSeparator')) })
       }
       state.chat.notesOpen = true
     }
   } catch (err) {
-    state.chat.error = String(err.message)
+    state.chat.error = errorText(err)
     if (!state.chat.draft) state.chat.draft = text // 失败保留输入，方便重试
   } finally {
     state.chat.pendings = state.chat.pendings.filter((item) => item.token !== pending.token)
@@ -2001,7 +2174,7 @@ async function pinChat(event) {
         sessionId: session.sessionId, text, to: event.to == null ? null : Number(event.to),
       })
       if (result.session) applyChatSession(result.session)
-      state.chat.notice = (result.chat && result.chat.notice) || '已钉住这条发言为战术备忘。'
+      state.chat.notice = (result.chat && result.chat.notice) || t('chat.noticePinned')
       state.chat.notesOpen = true
     } else {
       const result = await api('POST', '/notes/add', {
@@ -2011,11 +2184,11 @@ async function pinChat(event) {
         evidence: Number.isInteger(event.seq) ? event.seq : null,
       })
       state.session = result.session
-      state.chat.notice = '已钉住这条发言为战术备忘。'
+      state.chat.notice = t('chat.noticePinned')
       state.chat.notesOpen = true
     }
   } catch (err) {
-    state.chat.error = String(err.message)
+    state.chat.error = errorText(err)
   }
   render()
 }
@@ -2028,7 +2201,7 @@ async function deleteNote(noteId) {
     const result = await api('POST', '/notes/delete', { sessionId: session.sessionId, noteId })
     state.session = result.session
   } catch (err) {
-    state.chat.error = String(err.message)
+    state.chat.error = errorText(err)
   }
   render()
 }
@@ -2036,14 +2209,14 @@ async function deleteNote(noteId) {
 async function editNote(note) {
   const session = state.session
   if (!session) return
-  const next = window.prompt('修改战术备忘（不超过 30 字）', note.text)
+  const next = window.prompt(t('chat.notePrompt'), note.text)
   if (next == null) return
   resetChatState()
   try {
     const result = await api('POST', '/notes/update', { sessionId: session.sessionId, noteId: note.id, text: String(next).trim() })
     state.session = result.session
   } catch (err) {
-    state.chat.error = String(err.message)
+    state.chat.error = errorText(err)
   }
   render()
 }
@@ -2051,14 +2224,14 @@ async function editNote(note) {
 async function clearNotes() {
   const session = state.session
   if (!session) return
-  if (!window.confirm('清空本局全部战术备忘？此操作不可撤销。')) return
+  if (!window.confirm(t('chat.clearConfirm'))) return
   resetChatState()
   try {
     const result = await api('POST', '/notes/clear', { sessionId: session.sessionId })
     state.session = result.session
-    state.chat.notice = '已清空本局记忆。'
+    state.chat.notice = t('chat.noticeCleared')
   } catch (err) {
-    state.chat.error = String(err.message)
+    state.chat.error = errorText(err)
   }
   render()
 }
@@ -2069,7 +2242,18 @@ async function clearNotes() {
 
 async function boot() {
   try {
-    const [g, a, c] = await Promise.all([api('GET', '/catalog'), api('GET', '/ais'), api('GET', '/config')])
+    // /api/settings 用 .catch(() => null) 隔离：旧服务端 / 临时失败不阻塞大厅（docs/localization.md §5.4）。
+    const [g, a, c, s] = await Promise.all([
+      api('GET', '/catalog'),
+      api('GET', '/ais'),
+      api('GET', '/config'),
+      api('GET', '/settings').catch(() => null),
+    ])
+    state.settings = s?.settings || { schema: 1, locale: 'zh-CN' }
+    state.locales = Array.isArray(s?.locales) && s.locales.length ? s.locales : [{ id: 'zh-CN', label: '简体中文' }]
+    // setLocale() 必须在首次 render() 之前执行，避免先渲染中文再闪成英文。
+    if (!s) console.warn('[i18n] GET /api/settings 不可用，回退 zh-CN')
+    setLocale(state.settings.locale)
     state.catalog = g.games || []
     state.ais = a.ais || []
     state.config = c
@@ -2077,7 +2261,7 @@ async function boot() {
     // 刷新 / 服务端重启后自动回到上一局（服务端已把对局落盘）
     await onlineUi.boot()
     if (!state.online?.room) await resumeSession()
-  } catch (e) { state.error = String(e.message) }
+  } catch (e) { state.error = errorText(e) }
   render()
 }
 

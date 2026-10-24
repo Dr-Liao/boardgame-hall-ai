@@ -1,25 +1,37 @@
 # 测试怎么跑
 
-`games/arkhamhorror` 的回归原来只有一个入口：单进程把 69 个用例文件依次 import，跑一遍约 5.5 分钟。
-现在按覆盖面和实测耗时分成三层，日常改动只跑快的那层。
+`games/arkhamhorror` 的回归按覆盖面与实测耗时分成 fast / slow / assets 三档，日常改动只跑快档；
+全量入口 `npm test` 会把所有文件交给 node 自己的测试运行器并行跑（每个文件独立进程）。
+
+下面的耗时是 2026-10-24 在 Windows（32 线程，node 22.23.1）上实测的参考值；机器、内容量都会影响它，
+**逐文件耗时用 `node tools/test-timings.mjs <tier>` 现测，不要照抄文档数字**。
 
 ## 命令
 
 大厅 `package.json` 不再为每个游戏登记命令；游戏自己的脚本统一用 `npm run test:mod -- <游戏 id> [脚本]` 转发，
 脚本写 `fast` 时先找 `test:fast`。不带脚本名运行 `npm run test:mod -- arkhamhorror nope` 可列出该游戏的全部测试脚本。
 
-| 命令 | 覆盖 | 实测耗时（Windows / node 22） |
+| 命令 | 覆盖 | 实测耗时（2026-10-24，32 线程 Windows / node 22.23.1；P0+P1 优化后） |
 | --- | --- | --- |
-| `npm run test:mod -- arkhamhorror fast` | 规则、AI、卡牌逻辑 | 约 8 秒 |
-| `npm run test:mod -- arkhamhorror assets` | 卡池导入、展示资源、媒体许可、BGM 分配 | 约 30 秒 |
-| `npm run test:mod -- arkhamhorror slow` | 整局模拟、存读档迁移、大厅联机集成（含四人长跑） | 约 2 分钟以上 |
-| `npm run test:mod -- arkhamhorror` | 全量（默认入口，每个文件独立进程并行） | 约 2.5 分钟（实测 154 秒） |
-| `npm run test:mod -- arkhamhorror node` | 全量，单进程串行（排查顺序依赖时用） | 约 5.5 分钟 |
-| `npm run test:hall` | 大厅回归，只依赖五子棋、井字棋和 `tests/fixtures/mods/` 下的测试专用 Mod | 约 10 秒 |
-| `npm run test:hall:browser` | 大厅浏览器回归（复用系统 Edge） | 约 7 秒/用例 |
-| `npm run test:mod -- arkhamhorror browser` | 诡镇浏览器回归，含诡镇在大厅开局与联机界面上的用例（复用系统 Edge） | 视用例而定 |
+| `npm run test:mod -- arkhamhorror fast` | 规则、AI、卡牌逻辑、golden replay | 约 25 秒 |
+| `npm run test:mod -- arkhamhorror assets` | 卡池导入、展示资源、媒体许可、BGM 分配 | 约 25 秒 |
+| `npm run test:mod -- arkhamhorror slow` | 整局模拟、存读档迁移、随机对局重放、大厅联机集成（含四人长跑） | 约 1 分钟（64 秒） |
+| `npm run test:mod -- arkhamhorror` | 全量（默认入口，每个文件独立进程并行） | 约 1.4 分钟（82 秒） |
+| `npm run test:mod -- arkhamhorror node` | 全量，单进程串行（排查顺序依赖时用） | 不建议日常：比并行入口慢一个数量级（>10 分钟量级） |
+| `npm run test:mod -- arkhamhorror timing` | 逐文件耗时、tier 墙钟与并行度（`tools/test-timings.mjs`） | 视 tier 而定 |
+| `npm run test:hall` | 大厅回归，只依赖五子棋、井字棋和 `tests/fixtures/mods/` 下的测试专用 Mod | 约 12 秒 |
+| `npm run test:hall:browser` | 大厅浏览器回归（复用系统 Edge） | 10 例约 36 秒（≈3.6 秒/例） |
+| `npm run test:mod -- arkhamhorror browser` | 诡镇浏览器回归，含诡镇在大厅开局与联机界面上的用例（复用系统 Edge） | 视用例而定；不在 `npm test` 内 |
 
-手工验证单个文件最快：`cd games/arkhamhorror && node --test tests/ai-dialogue.test.mjs`（0.1 秒）。
+P1（2026-10-24）优化了引擎热路径：构筑规则（升级/自动构筑/legalMoves）从每张牌重复 `structuredClone`
+改为按调查员缓存冻结规则 + 卡面/规则派生信息 WeakMap 缓存；golden replay 按分组拆成 3 个文件并行；
+四人联机长跑去掉冗余 status 轮询并下调固定等待。上表数字是该轮实测。
+
+慢档里两个历史上最重的文件已经拆分减量：`campaign-n4-purchase-stress`（默认 50 轮，`N4_CANCEL_LOOPS=300` 跑原深度）、
+`replay-fuzz` / `replay-fuzz-walker`（默认 40 局 / 400 步，`REPLAY_FUZZ_FULL=1` 跑完整 100 局 / 2,000 步）。
+完整口径留给 nightly 或发布前手动跑。
+
+手工验证单个文件最快：`cd games/arkhamhorror && node --test tests/ai-dialogue.test.mjs`（通常 1–2 秒，含 node 启动）。
 
 ## 大厅回归与游戏回归的边界
 
@@ -35,13 +47,17 @@
 tier 之间不重叠、清单里的文件真实存在。任何 tier 开始跑之前都会先跑这个守卫，所以新用例忘登记会立刻报错，
 而不是等到某次全量才发现快测根本没覆盖它。
 
-清单按实测耗时排序并标注了秒数。**重新分层前请重新计时**，别按文件名猜——`campaign-n4` 一个文件就占 130 秒，
-而名字很像"重活"的 `carcosa-rules` 只要 1.1 秒。
+清单不再写死逐文件秒数（引擎/内容一变就失真，历史注释曾偏离实测 3–4 倍）。需要逐文件耗时时跑
+`node tools/test-timings.mjs <fast|slow|assets>`：默认并行（看 tier 墙钟与相对排序），加 `--serial` 得到接近
+「单文件净耗时」的数字，`--top=N` 只看最重的几个。重新分层前先重测，别按文件名猜——例如名字像"轻活"的
+`replay-golden` 现在是 fast 档的关键路径。
 
 ## 为什么快
 
 `node --test` 收到多个文件时会按 CPU 并行、每个文件独立进程；把清单塞进单个入口文件串行 import 则没有这层并行。
-两种写法差一个数量级：fast 43 秒 → 7 秒，全量 328 秒 → 154 秒。
+并行入口（`tools/run-tests.mjs`、`tools/test-timings.mjs`）就是按这个方式跑：全量 160+ 个文件在本机约 139 秒，
+墙钟由最慢的单文件决定（当前是 `hall-online` 的联机四人长跑与 `replay-fuzz-walker` 的随机走子器），
+其余文件早已跑完；串行单进程入口会慢一个数量级。
 
 顺带修掉一个隐患：单进程串行跑全量时，模块级全局状态会在用例文件之间串。
 典型例子是 `music-assets.test.mjs`——它在串行全量里被判红（别的用例往内容注册表里注册了测试战役），

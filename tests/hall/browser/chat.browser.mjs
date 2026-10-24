@@ -224,7 +224,9 @@ test('@ 定向发言与 / 指令补全', async ({ page }) => {
 test('模型设置：高级参数可见、可保存并生效', async ({ page }) => {
   await page.goto(origin + '/', { waitUntil: 'networkidle' })
   await page.click('.bg-settings-btn')
-  await page.locator('.bg-tab', { hasText: '模型连接' }).click()
+  // AI 角色 / 模型连接 / AI 指标已合并进顶层 AI 页签，模型参数在其二级页签里。
+  await page.locator('.bg-tab', { hasText: 'AI' }).click()
+  await page.locator('.bg-subtab', { hasText: '模型连接' }).click()
   await expect(page.locator('.bg-advanced')).toBeVisible()
   await expect(page.locator('input[aria-label="maxTurnCalls"]')).toBeVisible()
   await expect(page.locator('input[aria-label="temperature"]')).toBeVisible()
@@ -238,7 +240,7 @@ test('模型设置：高级参数可见、可保存并生效', async ({ page }) 
 test('玩家名称：保存、刷新、对局显示和 AI 请求使用同一名称', async ({ page }) => {
   await page.goto(origin + '/', { waitUntil: 'networkidle' })
   await page.click('.bg-settings-btn')
-  await page.getByRole('button', { name: '👤 玩家', exact: true }).click()
+  await page.getByRole('button', { name: '玩家', exact: true }).click()
   await expect(page.getByLabel('玩家名称', { exact: true })).toHaveValue('player')
   const name = '星河 <队长>'
   await page.getByLabel('玩家名称', { exact: true }).fill(name)
@@ -246,7 +248,7 @@ test('玩家名称：保存、刷新、对局显示和 AI 请求使用同一名�
   await expect(page.getByRole('status')).toContainText('已保存')
   await page.reload({ waitUntil: 'networkidle' })
   await page.click('.bg-settings-btn')
-  await page.getByRole('button', { name: '👤 玩家', exact: true }).click()
+  await page.getByRole('button', { name: '玩家', exact: true }).click()
   await expect(page.getByLabel('玩家名称', { exact: true })).toHaveValue(name)
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

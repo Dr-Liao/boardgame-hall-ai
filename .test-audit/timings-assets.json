@@ -1,0 +1,13 @@
+{
+  "tier": "assets",
+  "serial": false,
+  "generatedAt": "2026-10-24T06:44:30.089Z",
+  "wallSeconds": 27.8,
+  "exit": 1,
+  "tests": 125,
+  "pass": 118,
+  "fail": 7,
+  "files": [],
+  "sumFileSeconds": 0,
+  "parallelism": 0
+}

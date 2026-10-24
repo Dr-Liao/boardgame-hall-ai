@@ -1,0 +1,30 @@
+﻿
+Running 10 tests using 1 worker
+
+node : (node:47344) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+At line:1 char:355
++ ... oding utf8; node node_modules/@playwright/test/cli.js test --config t ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ((node:47344) Wa... env being set.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 tests\hall\browser\chat.browser.mjs:116:1 › 战术讨论抽屉：自动续玩、公开/私聊、备忘写入与钉住 (2.1s)
+  ok  2 tests\hall\browser\chat.browser.mjs:178:1 › @ 定向发言与 / 指令补全 (1.8s)
+  ok  3 tests\hall\browser\chat.browser.mjs:224:1 › 模型设置：高级参数可见、可保存并生效 (1.0s)
+  ok  4 tests\hall\browser\chat.browser.mjs:238:1 › 玩家名称：保存、刷新、对局显示和 AI 请求使用同一名称 (2.7s)
+  [agent] 未配置 AI_API_KEY，AI 将按合法动作顺序兜底（全 agent 需配置模型）。
+  ok  5 tests\hall\browser\feedback.browser.mjs:8:1 › 反馈弹窗：内置 iframe、一键复制诊断信息、整页重绘不重建 (693ms)
+  [agent] 未配置 AI_API_KEY，AI 将按合法动作顺序兜底（全 agent 需配置模型）。
+  [agent] 未配置 AI_API_KEY，AI 将按合法动作顺序兜底（全 agent 需配置模型）。
+  ok  6 tests\hall\browser\online.browser.mjs:34:1 › two players create/join in the hall, alternate turns, chat and refresh (3.7s)
+[direct] 浏览器侧直连命令耗时(ms): 10.799999997019768
+  ok  7 tests\hall\browser\online.browser.mjs:78:1 › browser peers exchange moves and snapshots directly, then fall back when a peer tab closes (6.1s)
+  ok  8 tests\hall\browser\online.browser.mjs:120:1 › generic setup reserves AI slots and copying an invitation never shifts the room layout (3.3s)
+  [agent] 未配置 AI_API_KEY，AI 将按合法动作顺序兜底（全 agent 需配置模型）。
+  ok  9 tests\hall\browser\player-avatar.browser.mjs:8:1 › 玩家头像：上传预览、错误处理、保存刷新、棋盘局内显示、恢复默认 (1.6s)
+  [agent] 未配置 AI_API_KEY，AI 将按合法动作顺序兜底（全 agent 需配置模型）。
+  [agent] 未配置 AI_API_KEY，AI 将按合法动作顺序兜底（全 agent 需配置模型）。
+  ok 10 tests\hall\browser\static.browser.mjs:46:1 › 静态表 hydrate 后联机棋局正常渲染，客人刷新由 guest 大厅补发静态表 (584ms)
+
+  10 passed (27.7s)

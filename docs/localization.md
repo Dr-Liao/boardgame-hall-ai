@@ -1,6 +1,6 @@
 # 大厅与游戏本地化（i18n）实现方案（2026-10）
 
-> 状态：**设计稿，尚未实现**。截至 2026-10-23，仓库里没有大厅级语言设置；`public/` 与 `lib/server.js` 的用户可见文案几乎全是中文硬编码。诡镇奇谈主要是**卡牌文本和卡图**的局部双语，也没有接入大厅语言。
+> 状态：**已实现（2026-10-24）**。大厅侧 P1–P4 + P6 已落地：`settings.json` / `GET|POST /api/settings`、`lib/i18n.js` 解析与合并、`public/i18n.js` + 中英词典 +「语言」设置页、Mod `i18n` 契约（`mod.i18n` / `web.locales` / 顶层 `localize` 钩子）、catalog 已本地化元数据与回退标记、`host.locale` / `onLocaleChange`、`createSession` / `handleApi` / `handleLocalApi` 语言上下文、`session.locale`、registry `localized`。诡镇奇谈完成 P5 第一、二阶段（目录/设置元数据、`web.locales`、卡牌展示统一入口、`followHall` 偏好），第三步（界面词典）只覆盖主路径，引擎文本与其余界面作为后续项（§8.7）。实现记录与相对本文档的取舍见 §18。
 >
 > 范围：大厅界面、开局/目录元数据、Mod 界面与其自带内容；不含 AI 台词翻译、规则引擎全量文案重构、用户内容翻译。
 >
@@ -10,7 +10,7 @@
 
 | 需求 | 落点 |
 | --- | --- |
-| 设置可以改语言 | 大厅新增「🌐 语言」设置页；语言偏好写入 `settings.json`，经 `GET/POST /api/settings` 读写，立即生效、重启保留 |
+| 设置可以改语言 | 大厅新增「语言」设置页；语言偏好写入 `settings.json`，经 `GET/POST /api/settings` 读写，立即生效、重启保留 |
 | 游戏会储存自己的本地化 | 本地化资源由 Mod 自己携带（`web/locales/` + `index.js` 的 `i18n.messages`），随游戏版本发布，大厅不翻译游戏正文 |
 | 同步显示大厅的语言 | 大厅按当前语言解析每个 Mod 的元数据，随 `/api/catalog` 下发；Mod 前端通过 `host.locale` / `onLocaleChange` 拿到当前语言 |
 | 没有就回退游戏自己的默认语言 | 统一的 `resolveLocale()`：请求语言 → 同主语言变体 → 游戏 `defaultLocale` → 源文案；逐字段再按同一顺序回退 |
@@ -51,7 +51,7 @@
 | 位置 | 现状 |
 | --- | --- |
 | `public/index.html` | `<html lang="zh-CN">`、`<title>桌游大厅</title>` 写死；页面只加载 `/app.js` |
-| `public/app.js` | 用户可见文案基本是中文硬编码；`boot()` 只并行请求 `/api/catalog`、`/api/ais`、`/api/config`；设置弹窗固定 6 个页签（玩家/AI/模型/联机/指标/更新） |
+| `public/app.js` | 用户可见文案基本是中文硬编码；`boot()` 只并行请求 `/api/catalog`、`/api/ais`、`/api/config`；设置弹窗固定 5 个顶层页签（玩家/AI/联机/大厅更新/语言），AI 页签内含 AI 角色/模型连接/AI 指标三个二级页签 |
 | `public/online-ui.js`、`updates-ui.js`、`feedback-ui.js`、`chat-compose.js`、`chat-notifications.js` | 同样是中文硬编码；`updates-ui.js` 里有一处 `toLocaleString()` 未指定语言 |
 | `lib/server.js` | `catalogView()` 直接下发 Mod 的 `name` / `description` / `tags` / `settingsSpec`；API 错误大多是中文 `error` 字符串 |
 | 设置存放 | 更新设置存 `<DSH_HOME 或 ~/.dsh>/boardgame-hall/updates.json`（`lib/update-common.js`）；模型与玩家资料存项目根 `boardgame.config.json`（`DSH_HOME` 下为 `<DSH_HOME>/boardgame.config.json`，`lib/agent/config.js`）；没有通用的「大厅偏好」文件 |
@@ -242,7 +242,7 @@ export function settingsView()          // -> { ok: true, settings, locales }
 在 `public/app.js` 的 `renderSettingsModal()` 增加一个页签：
 
 ```js
-tabBtn('language', '🌐 ' + t('settings.tabs.language'))
+tabBtn('language', t('settings.tabs.language'))
 ```
 
 `state.settingsTab` 的联合类型注释同步加上 `'language'`，并在 `state` 里新增 `settings: null` 保存 `GET /api/settings` 的 `settings` 字段、`locales: []` 保存语言选项；不要把整个响应塞进 `state.settings`。页面内容：
@@ -315,7 +315,8 @@ public/locales/en.js           # 英文词典
 export default {
   'app.title': '桌游大厅',
   'library.subtitle': '选择一款桌游，与朋友联机或与 AI 对弈',
-  'settings.tabs.player': '👤 玩家',
+  'settings.tabs.player': '玩家',
+  'settings.tabs.ai': 'AI',
   'settings.tabs.language': '语言',
   'settings.language.desc': '游戏会跟随这里选择的语言；如果游戏没有提供该语言，会使用游戏自己的默认语言。',
   'setup.start': '开始对局',
@@ -329,7 +330,8 @@ export default {
 export default {
   'app.title': 'Board Game Hall',
   'library.subtitle': 'Pick a game and play online with friends or against AI',
-  'settings.tabs.player': '👤 Player',
+  'settings.tabs.player': 'Player',
+  'settings.tabs.ai': 'AI',
   'settings.tabs.language': 'Language',
   'settings.language.desc': 'Games follow this language. If a game does not provide it, the game’s own default language is used.',
   'setup.start': 'Start game',
@@ -1145,3 +1147,35 @@ npm run test:mod -- arkhamhorror browser
 - `docs/testing.md`：大厅/Mod 测试分层与命令。
 - BCP 47（RFC 5646）：<https://www.rfc-editor.org/rfc/rfc5646>
 - MDN `Intl`：<https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Intl>
+
+## 18. 实现记录（2026-10-24）
+
+### 18.1 落地范围
+
+| 阶段 | 状态 | 主要文件 |
+| --- | --- | --- |
+| P1 核心 | ✅ | `lib/settings.js`、`lib/i18n.js`、`lib/server.js`（`GET/POST /api/settings`、`catalogView(locale)`、`updatesView(locale)`）、`tests/hall/i18n.test.mjs` |
+| P2 大厅壳 | ✅ | `public/i18n.js`、`public/locales/{zh-CN,en}.js`（429 key，1:1）、`public/app.js`、`public/index.html`、`public/style.css`、`public/online-ui.js`、`public/updates-ui.js`、`public/feedback-ui.js`、`tests/hall/i18n-dict.test.mjs`、`tests/hall/browser/i18n.browser.mjs`、`tests/hall/browser/settings.browser.mjs` |
+| P3 Mod 元数据 | ✅ | `lib/mods.js`（i18n/localize/web.locales 校验 + `web.localeUrls`）、`lib/store.js`（registry `localized`）、`tests/fixtures/mods/fixture-i18n/`、`tests/fixtures/mods/fixture-cards/`、`tests/hall/mod-i18n.test.mjs` |
+| P4 Mod 运行时 | ✅ | `public/app.js`（`host.locale` / `onLocaleChange` / `hosts` 表）、`lib/server.js`（`createState`/`handleApi`/`handleLocalApi` 语言上下文、`session.locale`、联机 `sessionView` 分支） |
+| P5 诡镇接入 | ◐ 第一、二阶段完成，第三步部分 | `games/arkhamhorror/index.js`、`web/i18n.js`、`web/locales/{zh-CN,en}.js`（120 key）、`web/catalog.js` 卡牌展示统一入口、`web/{game-ui,hub,table-regions,card-zoom,story-reader,situation-view,tcu-ui}.js`、`preferences.followHall` |
+| P6 商店/文档 | ✅ | `registry/index.json`（arkhamhorror `localized.en`）、`docs/updates.md`、`README.md` |
+
+P5 第三步剩余项：hub 开局弹窗/各页签正文、situation/chaos bag/rulebook/music/tcu 面板、`renderFullCard` 内部字段标签、服务端下发的卡包/职业名；引擎生成事件、剧情、地点/幕名属于 §1.2 非目标。
+
+### 18.2 相对本方案的实现取舍
+
+1. **legacy-name 兼容层放在 `lib/i18n.js` 的 `localizeMod()`**，catalog 与商店「已安装」条目共用；`resolveLocale()` 本身仍只返回 `exact/base-language/mod-default/source`（符合 §7.5「catalog 层兼容标记」的语义）。
+2. **商店排序在 `server.js` 的 `updatesView()` 里按当前 locale 重排**（§5.5 允许的第二种做法）：`lib/store.js` 的 `status()` 保持中立；`parseRegistry()` 校验并保留 `localized`，`status()` 把 `localized` 带到游戏条目上，由服务端选展示名。
+3. `public/i18n.js` 额外导出 `normalizeLocale` / `HALL_LOCALES` / `hallLocales` / `hasKey`，供设置页兜底与词典完整性测试使用；解析/回退算法与服务端 `lib/i18n.js` 保持同一规则，但两端各自独立（浏览器不 import 服务端模块）。
+4. 浏览器用例在「已开局、设置页不可达」时通过 `await import('/app.js')` 调用导出的 `saveLocale()`，走与设置页完全相同的保存链路；这是测试出口，无生产副作用。
+5. `errorText()` 按 §6.3 映射带 `code` 的服务端错误；大量旧错误仍无 code，继续显示服务端中文兜底（后续触碰对应代码时逐步补 code）。
+6. 语言页签放在设置页最后；语言下拉使用 `data-testid="hall-locale"`，`aria-label` 保持参数名等既有测试选择器不变（模型高级参数页的 `maxTurnCalls` 等）。
+7. §1.2 非目标保持不变：AI 台词、引擎文本、历史存档回译、RTL/ICU、机器翻译均未做。
+
+### 18.3 验证结果（2026-10-24）
+
+- `npm run test:hall`：**210 passed / 0 failed**（含新增 `i18n`、`mod-i18n`、`i18n-dict` 与既有 29 个用例文件）。
+- `npm run test:hall:browser`：**14 passed**（含新增 `i18n.browser.mjs` 4 个用例；其余既有用例保持通过）。
+- 诡镇奇谈：`npm run test:mod -- arkhamhorror fast` 3322 passed / 4 failed；4 项失败均为**改动前已存在的**内容/账本用例（dunwich 卡牌槽位、state-presentation 旧存档补槽、tcu 发布与迁移账本），不 import 本次改动的展示模块；`build-presentation --check` 的 `audit/presentation-report.json` drift 也是既有状态，按约定未盲目重生成。
+- 端到端抽查：`localizeMod(indexMod,'en')` 输出全英文名称/描述/标签/16 项设置/5 个战役名；`loadModFrom` 后 `mod.web.localeUrls` 与 catalog `i18n.files` 一致；切回 zh-CN 与基础字段 deep-equal。

@@ -19,7 +19,7 @@ test('玩家头像：上传预览、错误处理、保存刷新、棋盘局内�
     const call = async (url, body) => (await page.request.post(origin + '/api' + url, { data: body })).json()
     const openSettings = async () => {
       await page.locator('.bg-settings-btn').click()
-      await page.getByRole('button', { name: '👤 玩家', exact: true }).click()
+      await page.getByRole('button', { name: '玩家', exact: true }).click()
     }
     await page.goto(origin)
     await openSettings()

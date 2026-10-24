@@ -7,7 +7,13 @@
       "cdn": "https://drliao1.com/arkhamhorror/",
       "name": "诡镇奇谈：卡牌版",
       "description": "合作卡牌，1~4 人",
-      "coverEmoji": "🐙"
+      "coverEmoji": "🐙",
+      "localized": {
+        "en": {
+          "name": "Arkham Horror: The Card Game",
+          "description": "Cooperative card game for 1–4 players"
+        }
+      }
     }
   ]
 }
