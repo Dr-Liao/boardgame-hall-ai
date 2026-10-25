@@ -23,6 +23,13 @@ artifacts/
 # 测试/本地运行用的临时数据目录（DSH_HOME）
 .test-home/
 .tmp-dsh-home/
+.tmp-hall-home/
+
+# 测试与性能审计的过程产物（日志、junit、cpuprofile、探针脚本）
+.test-audit/
+
+# Windows 沙箱 ACL 诊断技能生成的报告与备份
+.acl-repair/
 
 # 在仓库根目录运行发布版时生成的存档与设置
 user-data/
