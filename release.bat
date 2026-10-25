@@ -33,6 +33,11 @@ if errorlevel 1 goto git_missing
 where node >nul 2>nul
 if errorlevel 1 goto node_missing
 
+for /f "usebackq delims=" %%I in (`node -p "require('./package.json').version"`) do set "CURRENT=%%I"
+if not defined CURRENT set "CURRENT=?"
+echo 当前大厅版本：v%CURRENT%
+echo.
+
 git rev-parse --is-inside-work-tree >nul 2>nul
 if errorlevel 1 goto not_repo
 set "HAS_ARKHAM="
@@ -67,7 +72,7 @@ goto version_ready
 
 :prompt_version
 set "VERSION="
-set /p "VERSION=请输入大厅版本号（x.y.z，例如 0.3.0）: "
+set /p "VERSION=请输入大厅版本号（当前 v%CURRENT%；x.y.z，例如 0.3.0）: "
 
 :version_ready
 if not defined VERSION goto version_cancelled
@@ -88,6 +93,7 @@ if not defined NOTES set "NOTES=Release v%VERSION%"
 
 echo.
 echo 即将发布大厅 v%VERSION%
+echo   当前版本：v%CURRENT%
 echo   更新说明：%NOTES%
 echo.
 
