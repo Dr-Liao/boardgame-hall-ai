@@ -133,9 +133,10 @@ test('单机：client.autoPass 在响应前代答，窗口不落盘、actionLog 
   assert.deepEqual(labels(opened.session.state), ['open', 'skip'], 'skip 走的是普通 applyMove')
   assert.equal(opened.session.state.revision, revision + 2)
 
-  // 不带偏好 = 旧行为：窗口保留，客户端仍然自己回答。
+  // 显式清空偏好 = 回到「窗口保留、客户端自己回答」的旧行为。
   const keep = await hall.request('move', {
     sessionId, revision: opened.session.state.revision, move: { action: 'open' },
+    client: { autoPass: { codes: [] } },
   })
   assert.equal(keep.ok, true, keep.error)
   assert.equal(keep.session.state.pendingChoice?.id, 'opt-' + opened.session.state.revision)

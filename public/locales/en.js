@@ -53,7 +53,6 @@ export default {
   'library.settingsTitleUpdates': 'Settings · Hall update available',
 
   // —— Settings: shared footer buttons ——
-  'settings.feedback': '💬 Feedback',
   'settings.close': 'Close',
   'settings.addAi': '➕ New AI',
 

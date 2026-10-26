@@ -2,6 +2,7 @@
 //
 // 覆盖（本次改版验收）：
 //   1. 顶层页签固定 5 个（玩家/AI/联机/大厅更新/语言），顺序固定、不含 emoji，默认选中 AI；
+//      footer 不再有「反馈」入口（反馈只保留大厅右上角与对局标题栏）；
 //   2. AI 页签内的二级页签（AI 角色/模型连接/AI 指标）可切换，模型表单与指标面板仍可用；
 //      「新增 AI」只在 AI 角色子页签出现，指标面板自带刷新/清空、footer 不再重复刷新；
 //   3. 390px 窄屏下 AI 页签与二级页签不横向溢出；英文语言下页签文案同步且无 emoji。
@@ -79,6 +80,8 @@ test('设置页签：合并为 5 个顶层页签、无 emoji、默认停在 AI',
   expect(await page.locator('.bg-subtab').allTextContents()).toEqual(['AI 角色', '模型连接', 'AI 指标'])
   await expect(page.locator('.bg-subtab-active')).toHaveText('AI 角色')
   await expect(page.locator('.bg-ai-list')).toBeVisible()
+  // 设置里不再有「反馈」按钮（反馈入口只在大厅右上角与对局标题栏）。
+  await expect(page.locator('.bg-modal > .bg-modal-foot button', { hasText: '反馈' })).toHaveCount(0)
 
   expect(pageErrors).toEqual([])
 })
@@ -102,10 +105,10 @@ test('AI 页签：三个二级页签可切换，模型表单 / 指标面板 / �
   await expect(page.locator('input[aria-label="模型"]')).toHaveCount(1)
   await expect(page.locator('.bg-modal > .bg-modal-foot button', { hasText: '新增 AI' })).toHaveCount(0)
 
-  // AI 指标：面板自己带刷新/清空（footer 不重复刷新），加载出指标网格。
+  // AI 指标：面板自己带刷新/清空（footer 不重复刷新），footer 只剩「关闭」。
   await page.locator('.bg-subtab', { hasText: 'AI 指标' }).click()
   await expect(page.locator('.bg-stats-grid')).toBeVisible()
-  await expect(page.locator('.bg-modal > .bg-modal-foot > button')).toHaveCount(2)
+  await expect(page.locator('.bg-modal > .bg-modal-foot > button')).toHaveCount(1)
   const subLabels = await page.locator('.bg-subtab').allTextContents()
   expect(subLabels.filter((label) => EMOJI.test(label))).toEqual([])
 

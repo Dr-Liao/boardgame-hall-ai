@@ -52,7 +52,6 @@ export default {
   'library.settingsTitleUpdates': '设置 · 大厅有可用更新',
 
   // —— 设置：通用底部按钮 ——
-  'settings.feedback': '💬 反馈',
   'settings.close': '关闭',
   'settings.addAi': '➕ 新增 AI',
 

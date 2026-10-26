@@ -845,7 +845,6 @@ function renderSettingsModal() {
       tab === 'player' ? renderPlayerTab() : tab === 'ai' ? aiPanel : tab === 'online' ? onlineUi.settingsPanel()
         : tab === 'updates' ? updatesUi.panel() : renderLanguageTab(),
       h('div', { className: 'bg-modal-foot' },
-        h('button', { className: 'bg-btn secondary', onclick: () => feedbackUi.open() }, t('settings.feedback')),
         h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = false; render() } }, t('settings.close')),
         // 指标面板自带刷新/清空按钮，footer 只在 AI 角色列表下提供「新增 AI」。
         tab === 'ai' && aiSubTab === 'roles'

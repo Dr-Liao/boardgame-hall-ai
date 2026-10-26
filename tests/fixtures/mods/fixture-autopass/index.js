@@ -13,9 +13,10 @@
 
 const OPTION_CODE = 'opt-card'
 
-function choiceFor(seat, id) {
+function choiceFor(seat, id, opts = {}) {
   return {
     id, kind: 'reaction', seat, canSkip: true, source: OPTION_CODE,
+    ...(opts.auto ? { autoOptionId: 'trigger', cardCode: OPTION_CODE } : {}),
     options: [{ id: 'skip', label: '跳过' }, { id: 'trigger', label: '触发', cardCode: OPTION_CODE }],
   }
 }
@@ -36,7 +37,7 @@ function legalMoves(state, seat) {
   if (choice) {
     return choice.options.map(option => ({ action: 'choose', choiceId: choice.id, optionId: option.id }))
   }
-  return [{ action: 'open' }, { action: 'openAll' }, { action: 'next' }, { action: 'mark' }, { action: 'end' }]
+  return [{ action: 'open' }, { action: 'openAuto' }, { action: 'openAll' }, { action: 'openAutoAll' }, { action: 'next' }, { action: 'mark' }, { action: 'end' }]
 }
 
 function validateMove(state, seat, move) {
@@ -48,7 +49,7 @@ function validateMove(state, seat, move) {
     if (!choice.options.some(option => option.id === move.optionId)) return '没有这个选项'
     return null
   }
-  if (!['open', 'openAll', 'next', 'mark', 'end'].includes(move.action)) return '未知动作'
+  if (!['open', 'openAuto', 'openAll', 'openAutoAll', 'next', 'mark', 'end'].includes(move.action)) return '未知动作'
   return null
 }
 
@@ -58,13 +59,19 @@ function applyMove(state, seat, move) {
     state.log.push({ seat, move: { action: 'open' } })
     return [{ type: 'move', seat, move: { action: 'open' } }]
   }
-  if (move.action === 'openAll') {
+  if (move.action === 'openAuto') {
+    state.pendingChoice = choiceFor(seat, 'opt-auto-' + state.revision, { auto: true })
+    state.log.push({ seat, move: { action: 'openAuto' } })
+    return [{ type: 'move', seat, move: { action: 'openAuto' } }]
+  }
+  if (move.action === 'openAll' || move.action === 'openAutoAll') {
     // 连续窗口链：座位 0..N-1 依次开窗，全部在同一个事务（同一条命令）里推进。
     state.group = Array.from({ length: state.seats }, (_, index) => index)
     state.groupCursor = 0
-    state.pendingChoice = choiceFor(0, 'opt-all-0')
-    state.log.push({ seat, move: { action: 'openAll' } })
-    return [{ type: 'move', seat, move: { action: 'openAll' } }]
+    state.groupMode = move.action === 'openAutoAll' ? 'auto' : null
+    state.pendingChoice = choiceFor(0, 'opt-all-0', { auto: state.groupMode === 'auto' })
+    state.log.push({ seat, move: { action: move.action } })
+    return [{ type: 'move', seat, move: { action: move.action } }]
   }
   if (move.action === 'next') {
     state.currentSeat = (seat + 1) % state.seats
@@ -88,12 +95,13 @@ function applyMove(state, seat, move) {
     state.groupCursor++
     if (state.groupCursor < state.group.length) {
       const next = state.group[state.groupCursor]
-      state.pendingChoice = choiceFor(next, 'opt-all-' + next)
+      state.pendingChoice = choiceFor(next, 'opt-all-' + next, { auto: state.groupMode === 'auto' })
     } else {
       state.pendingChoice = null
       state.currentSeat = state.group[state.group.length - 1]
       state.group = null
       state.groupCursor = 0
+      state.groupMode = null
       state.completed = (state.completed || 0) + 1
     }
     return [event]
@@ -117,7 +125,7 @@ export default {
   settingsSpec: [],
   defaults: { seed: 'autopass' },
 
-  moveFormat: '{"action":"open"} | {"action":"openAll"} | {"action":"next"} | {"action":"mark"} | {"action":"end"} | {"action":"choose","choiceId":"...","optionId":"..."}',
+  moveFormat: '{"action":"open"} | {"action":"openAuto"} | {"action":"openAll"} | {"action":"openAutoAll"} | {"action":"next"} | {"action":"mark"} | {"action":"end"} | {"action":"choose","choiceId":"...","optionId":"..."}',
   moveToText: move => JSON.stringify(move),
   describeState: (state, seat) => `待决：${state.pendingChoice ? state.pendingChoice.id : '无'}；当前席位：${state.currentSeat}`,
   legalMoves,
@@ -129,8 +137,24 @@ export default {
   createState(settings, players) {
     return {
       status: 'playing', seats: players.length, currentSeat: 0, pendingChoice: null, triggered: 0,
-      completed: 0, group: null, groupCursor: 0, log: [],
+      completed: 0, group: null, groupCursor: 0, groupMode: null, log: [],
     }
+  },
+
+  // 三态自动结算夹具：有 autoOptionId 且状态为 auto → trigger；否则按 skip 覆盖做全关闭判定。
+  autoChoice({ state, seat, states }) {
+    const choice = state?.pendingChoice
+    if (!choice || choice.seat !== seat) return null
+    const code = choice.cardCode || OPTION_CODE
+    const stateOf = item => states?.[item] ?? (choice.autoOptionId && item === code ? 'auto' : 'ask')
+    if (choice.autoOptionId && choice.canSkip !== false && stateOf(code) === 'auto') {
+      return { action: 'choose', choiceId: choice.id, optionId: choice.autoOptionId }
+    }
+    if (!choice.canSkip) return null
+    const disabled = new Set(Object.entries(states || {}).filter(([, value]) => value === 'skip').map(([item]) => item))
+    const codes = choice.options.map(option => option.cardCode).filter(Boolean)
+    if (!codes.length || !codes.every(item => disabled.has(item))) return null
+    return { action: 'choose', choiceId: choice.id, optionId: 'skip' }
   },
 
   // 自动跳过钩子：窗口所有非 skip 选项都映射到已关闭的卡号时，返回一条普通 choose/skip。
