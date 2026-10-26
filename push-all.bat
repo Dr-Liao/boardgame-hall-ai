@@ -1,7 +1,25 @@
 @echo off
+REM ==========================================================================
+REM Encoding note: this file must stay UTF-8 (no BOM) + CRLF. cmd.exe mis-parses
+REM a UTF-8 batch file when the console code page changes while it is reading the
+REM file, so this ASCII-only header switches the console to UTF-8 and re-runs the
+REM script in a NEW cmd process (whose parser starts in UTF-8 from the first byte).
+REM Keep this header ASCII-only: no Chinese text here, please.
+REM ==========================================================================
+if defined BG_SCRIPT_UTF8 goto main
+setlocal
+set "BG_SCRIPT_UTF8=1"
+chcp 65001 >nul
+"%COMSPEC%" /d /c call "%~f0" %*
+set "BG_SCRIPT_RC=%errorlevel%"
+exit /b %BG_SCRIPT_RC%
+
+:main
+@echo off
 REM 一键提交并推送大厅与诡镇奇谈的全部代码（双击运行）。
 REM 诡镇奇谈是独立仓库：先提交并推送它，再提交并推送大厅（大厅不跟踪诡镇的内容）。
-REM 推送前会自动 fetch，落后就快进、分叉就把本地提交变基到远端之上。
+REM 推送前会自动 fetch：落后就快进；分叉就自动合并远端（merge，不改写本地提交）。
+REM 推送被远端拒绝时也会自动拉取、合并后重试；合并冲突时停止并自动取消本次合并。
 REM 可选参数 --yes：使用默认提交说明并跳过确认；--no-pause：结束时不暂停。
 setlocal EnableExtensions
 chcp 65001 >nul
@@ -34,6 +52,14 @@ if errorlevel 1 goto not_repo
 
 set "HAS_ARKHAM="
 if exist "games\arkhamhorror\.git" set "HAS_ARKHAM=1"
+
+REM 上次合并/变基因冲突没收尾时先停下来，避免把半成品提交、推送上去。
+call :check_progress "大厅" ".git"
+if not "%CLEAN_STATE%"=="1" goto progress_pending
+if not defined HAS_ARKHAM goto progress_ok
+call :check_progress "诡镇奇谈" "games\arkhamhorror\.git"
+if not "%CLEAN_STATE%"=="1" goto progress_pending
+:progress_ok
 
 for /f "usebackq delims=" %%I in (`git rev-parse --abbrev-ref HEAD`) do set "HALL_BRANCH=%%I"
 if "%HALL_BRANCH%"=="HEAD" goto detached_hall
@@ -109,9 +135,8 @@ echo   已提交。
 :arkham_push
 call :sync_branch "games\arkhamhorror" "%ARK_BRANCH%"
 if not "%SYNC_OK%"=="1" goto arkham_sync_failed
-echo   推送到 origin/%ARK_BRANCH%...
-git -C games\arkhamhorror push origin "%ARK_BRANCH%"
-if errorlevel 1 goto arkham_push_failed
+call :push_with_merge "games\arkhamhorror" "%ARK_BRANCH%"
+if not "%PUSH_OK%"=="1" goto arkham_push_failed
 
 :hall_section
 echo.
@@ -130,9 +155,8 @@ echo   已提交。
 :hall_push
 call :sync_branch "" "%HALL_BRANCH%"
 if not "%SYNC_OK%"=="1" goto hall_sync_failed
-echo   推送到 origin/%HALL_BRANCH%...
-git push origin "%HALL_BRANCH%"
-if errorlevel 1 goto hall_push_failed
+call :push_with_merge "" "%HALL_BRANCH%"
+if not "%PUSH_OK%"=="1" goto hall_push_failed
 
 echo.
 echo 推送完成：大厅 %HALL_BRANCH%
@@ -176,26 +200,36 @@ goto finish
 
 :arkham_push_failed
 echo [错误] 推送诡镇奇谈失败（本地提交已保留，不会丢失）。
-echo        - 若是 rejected / behind：远端又有新提交，重新运行本脚本即可（会自动变基）；
-echo        - 若是 Could not resolve host / Connection：网络或代理问题，先确认能打开 github.com。
+echo        - 脚本已自动拉取远端并尝试合并；若仍失败，按上方提示手动处理；
+echo        - 网络问题（Could not resolve host / Connection）：检查网络或代理后重新运行；
+echo        - 手动重试：git -C games\arkhamhorror fetch origin ^&^& git -C games\arkhamhorror merge origin/%ARK_BRANCH%
 set "RESULT=1"
 goto finish
 
 :hall_push_failed
 echo [错误] 推送大厅失败。
 echo        - 诡镇奇谈已经推送成功；大厅的本地提交仍在；
-echo        - 若是 rejected / behind：重新运行本脚本即可（会自动变基）；
-echo        - 若是网络错误：检查代理或稍后重试。
+echo        - 脚本已自动拉取远端并尝试合并；若仍失败，按上方提示手动处理；
+echo        - 网络问题：检查网络或代理后重新运行；
+echo        - 手动重试：git fetch origin ^&^& git merge origin/%HALL_BRANCH% ^&^& git push origin %HALL_BRANCH%
 set "RESULT=1"
 goto finish
 
 :arkham_sync_failed
-echo [错误] 诡镇奇谈与远端同步失败，已停止推送（本地提交已保留）。
+echo [错误] 诡镇奇谈自动合并远端失败，已停止推送（本地提交已保留，未完成的合并已取消）。
 set "RESULT=1"
 goto finish
 
 :hall_sync_failed
-echo [错误] 大厅与远端同步失败，已停止推送（本地提交已保留）。
+echo [错误] 大厅自动合并远端失败，已停止推送（本地提交已保留，未完成的合并已取消）。
+set "RESULT=1"
+goto finish
+
+:progress_pending
+echo [错误] %PROGRESS_REPO% 有未完成的合并或变基，脚本已停止（避免提交、推送半成品）。
+echo        请到对应仓库目录手动处理（大厅在根目录，诡镇奇谈在 games\arkhamhorror）：
+echo          git status
+echo          想放弃这次合并/变基：git merge --abort 或 git rebase --abort
 set "RESULT=1"
 goto finish
 
@@ -218,6 +252,7 @@ exit /b %RESULT%
 REM ---------------------------------------------------------------------------
 REM 推送前和远端对齐，避免 "Updates were rejected because the tip of your
 REM current branch is behind its remote counterpart"。
+REM 落后时快进；分叉时自动合并远端（merge，不改写本地提交）。
 REM   %1 = 子仓库相对路径（大厅传空 ""），%2 = 要推送的分支名
 REM   返回 SYNC_OK=1 表示可以继续推送，0 表示已停止
 REM ---------------------------------------------------------------------------
@@ -225,7 +260,7 @@ REM ---------------------------------------------------------------------------
 set "SYNC_OK=1"
 set "SYNC_BR=%~2"
 set "SYNC_PUSHD="
-set "SYNC_FULLPATH=%~dp0"
+set "SYNC_FULLPATH=%CD%"
 
 if "%~1"=="" goto sync_ready
 pushd "%~1" 2>nul
@@ -247,10 +282,10 @@ if not errorlevel 1 goto sync_exit
 git merge-base --is-ancestor HEAD "origin/%SYNC_BR%"
 if not errorlevel 1 goto sync_behind
 
-echo   本地与远端分叉，正在把本地提交变基到远端之上...
-git pull --rebase origin "%SYNC_BR%"
+echo   本地与远端分叉，正在自动合并远端提交（merge）...
+git merge --no-edit "origin/%SYNC_BR%"
 if errorlevel 1 goto sync_conflict
-echo   变基完成。
+echo   合并完成。
 goto sync_exit
 
 :sync_behind
@@ -270,14 +305,102 @@ set "SYNC_OK=0"
 goto sync_exit
 
 :sync_conflict
+git merge --abort >nul 2>nul
 echo.
-echo   [错误] 与远端同步失败（多半是代码冲突），脚本已停止，避免把提交弄乱。
-echo          请到 "%SYNC_FULLPATH%" 手动处理：
-echo            git status
-echo            解决冲突后 git add -A 再 git rebase --continue
-echo            不想处理就 git rebase --abort 回到原样
+echo   [错误] 自动合并远端失败（多半是代码冲突），脚本已停止，你的本地提交都还在。
+echo          未完成的合并已自动取消，工作区恢复到合并前。
+echo          如需手动合并，请到 "%SYNC_FULLPATH%"：
+echo            git fetch origin
+echo            git merge origin/%SYNC_BR%
+echo            解决冲突后：git add -A 然后 git commit
+echo            不想合并：git merge --abort
 set "SYNC_OK=0"
 
 :sync_exit
 if defined SYNC_PUSHD popd
+goto :eof
+
+REM ---------------------------------------------------------------------------
+REM 检查仓库里有没有上次没收尾的合并/变基（有的话先停下，避免提交半成品）。
+REM   %1 = 打印用的仓库名，%2 = .git 目录的相对路径
+REM   返回 CLEAN_STATE=1 表示没有未完成状态，0 表示有
+REM ---------------------------------------------------------------------------
+:check_progress
+set "PROGRESS_REPO=%~1"
+set "PROGRESS_GITDIR=%~2"
+set "CLEAN_STATE=1"
+if exist "%PROGRESS_GITDIR%\MERGE_HEAD" set "CLEAN_STATE=0"
+if exist "%PROGRESS_GITDIR%\rebase-merge" set "CLEAN_STATE=0"
+if exist "%PROGRESS_GITDIR%\rebase-apply" set "CLEAN_STATE=0"
+goto :eof
+
+REM ---------------------------------------------------------------------------
+REM 推送一个仓库；被远端拒绝时自动 fetch + merge 远端，然后再推一次（最多 3 次尝试）。
+REM 只有“被远端拒绝”（别人先推了新提交）才重试；网络、权限等错误直接报错。
+REM   %1 = 子仓库相对路径（大厅传空 ""），%2 = 要推送的分支名
+REM   返回 PUSH_OK=1 表示推送成功，0 表示失败
+REM ---------------------------------------------------------------------------
+:push_with_merge
+set "PUSH_OK=0"
+set "PUSH_BR=%~2"
+set "PUSH_TRY=0"
+set "PUSH_PUSHD="
+set "PUSH_LOG=%TEMP%\boardgame-hall-push.log"
+
+if "%~1"=="" goto push_next_try
+pushd "%~1" 2>nul
+if errorlevel 1 goto push_bad_dir
+set "PUSH_PUSHD=1"
+
+:push_next_try
+set /a PUSH_TRY+=1
+if "%PUSH_TRY%"=="1" goto push_first_try
+echo   自动拉取并合并完成，正在重新推送...
+goto push_run
+
+:push_first_try
+echo   推送到 origin/%PUSH_BR%...
+
+:push_run
+git push origin "%PUSH_BR%" >"%PUSH_LOG%" 2>&1
+if not errorlevel 1 goto push_ok
+
+if %PUSH_TRY% GEQ 3 goto push_gave_up
+
+REM 先排除“远端拒绝但不该重试”的情况（例如分支保护），再判断是否值得自动重试。
+findstr /i /c:"remote rejected" >nul "%PUSH_LOG%"
+if not errorlevel 1 goto push_failed
+findstr /i /c:"rejected" /c:"non-fast-forward" /c:"fetch first" /c:"behind its remote" >nul "%PUSH_LOG%"
+if errorlevel 1 goto push_failed
+
+echo   远端在推送期间又有新提交，正在自动拉取并合并后重试...
+REM 此时当前目录已经是要推送的仓库（大厅根目录或 games\arkhamhorror），所以传空路径。
+call :sync_branch "" "%PUSH_BR%"
+if not "%SYNC_OK%"=="1" goto push_exit
+goto push_next_try
+
+:push_ok
+set "PUSH_OK=1"
+echo   推送完成。
+goto push_exit
+
+:push_failed
+echo.
+echo   [错误] 推送失败，详细原因：
+type "%PUSH_LOG%"
+goto push_exit
+
+:push_gave_up
+echo.
+echo   [错误] 推送被远端拒绝，自动重试 3 次仍未成功，详细原因：
+type "%PUSH_LOG%"
+goto push_exit
+
+:push_bad_dir
+echo   [错误] 无法进入子仓库 "%~1"，已跳过推送。
+goto push_exit
+
+:push_exit
+del "%PUSH_LOG%" >nul 2>nul
+if defined PUSH_PUSHD popd
 goto :eof

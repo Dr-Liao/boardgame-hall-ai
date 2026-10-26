@@ -1,4 +1,21 @@
 @echo off
+REM ==========================================================================
+REM Encoding note: this file must stay UTF-8 (no BOM) + CRLF. cmd.exe mis-parses
+REM a UTF-8 batch file when the console code page changes while it is reading the
+REM file, so this ASCII-only header switches the console to UTF-8 and re-runs the
+REM script in a NEW cmd process (whose parser starts in UTF-8 from the first byte).
+REM Keep this header ASCII-only: no Chinese text here, please.
+REM ==========================================================================
+if defined BG_SCRIPT_UTF8 goto main
+setlocal
+set "BG_SCRIPT_UTF8=1"
+chcp 65001 >nul
+"%COMSPEC%" /d /c call "%~f0" %*
+set "BG_SCRIPT_RC=%errorlevel%"
+exit /b %BG_SCRIPT_RC%
+
+:main
+@echo off
 REM 一键拉取大厅和诡镇奇谈的最新代码（双击运行）。
 REM 大厅 = 当前仓库；诡镇奇谈 = 克隆在 games/arkhamhorror 的独立仓库（大厅不跟踪它）。
 REM 可选参数 --no-pause：结束时不要暂停，便于被其他脚本调用。
