@@ -1,0 +1,108 @@
+{
+ "head": {
+  "occlusion": {
+   "portrait": {
+    "x": 409,
+    "y": 559,
+    "w": 30,
+    "h": 35,
+    "right": 439,
+    "bottom": 594
+   },
+   "kicker": {
+    "x": 189,
+    "y": 559,
+    "w": 250,
+    "h": 20,
+    "right": 439,
+    "bottom": 579
+   },
+   "portraitOverlapsKickerRow": true,
+   "portraitTopVsKickerTop": 0,
+   "portraitBottomVsKickerBottom": 15,
+   "atPortraitCenter": "img.",
+   "atKickerRightEnd": "img."
+  },
+  "frames": 260,
+  "gearPositions": [
+   "379,583,24,24"
+  ],
+  "gearClasses": [
+   "ah-reaction-mode is-ask"
+  ],
+  "portraitPositions": [
+   "409,559,30,35"
+  ],
+  "kickerPositions": [
+   "189,559,250,20"
+  ],
+  "rowPositions": [
+   "189,583,214,24"
+  ],
+  "avatarPositions": [
+   "189,559,20,20"
+  ],
+  "gearMissingFrames": 0,
+  "portraitMissingFrames": 0,
+  "artTaggedFrames": 260,
+  "imgTaggedFrames": 260,
+  "presentingFrames": 0,
+  "busyFrames": 104,
+  "artStates": [
+   "displayable"
+  ]
+ },
+ "fix": {
+  "occlusion": {
+   "portrait": {
+    "x": 409,
+    "y": 577.5,
+    "w": 30,
+    "h": 35,
+    "right": 439,
+    "bottom": 612.5
+   },
+   "kicker": {
+    "x": 189,
+    "y": 559,
+    "w": 250,
+    "h": 20,
+    "right": 439,
+    "bottom": 579
+   },
+   "portraitOverlapsKickerRow": true,
+   "portraitTopVsKickerTop": 18.5,
+   "portraitBottomVsKickerBottom": 33.5,
+   "atPortraitCenter": "img.",
+   "atKickerRightEnd": "span.ah-dock-kicker"
+  },
+  "frames": 260,
+  "gearPositions": [
+   "379,583,24,24"
+  ],
+  "gearClasses": [
+   "ah-reaction-mode is-ask"
+  ],
+  "portraitPositions": [
+   "409,577.5,30,35"
+  ],
+  "kickerPositions": [
+   "189,559,250,20"
+  ],
+  "rowPositions": [
+   "189,583,250,24"
+  ],
+  "avatarPositions": [
+   "189,559,20,20"
+  ],
+  "gearMissingFrames": 0,
+  "portraitMissingFrames": 0,
+  "artTaggedFrames": 260,
+  "imgTaggedFrames": 260,
+  "presentingFrames": 0,
+  "busyFrames": 106,
+  "artStates": [
+   "displayable"
+  ]
+ }
+}

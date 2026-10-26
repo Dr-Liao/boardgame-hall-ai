@@ -313,9 +313,16 @@ a.bg-btn { display: inline-block; text-decoration: none; }
 
 .bg-toast {
   position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px; text-align: left;
   background: #3a2430; border: 1px solid var(--danger); color: #ffc2c8;
   padding: 10px 16px; border-radius: 10px; font-size: 13px; cursor: pointer; z-index: 50; max-width: 80vw;
 }
+.bg-toast > span { min-width: 0; overflow-wrap: anywhere; }
+.bg-toast-action {
+  flex: none; padding: 5px 10px; border-radius: 8px; border: 1px solid #ffc2c88c;
+  background: #ffffff14; color: #ffd9dd; font: inherit; font-size: 12px; cursor: pointer;
+}
+.bg-toast-action:hover { background: #ffffff26; }
 .bg-empty { padding: 40px; text-align: center; color: #7a8698; }
 
 @keyframes bg-pop { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }

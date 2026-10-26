@@ -419,7 +419,13 @@ function applyOnlineStatusDelta(payload) {
 }
 
 const onlineUi = createOnlineUI({ h, state, render, renderChrome: refreshOnlineBanner, request: rawApi, loadGame: loadModUi, perf,
-  hydrate: hydrateOnlineSession })
+  hydrate: hydrateOnlineSession,
+  // 「强制同步」成功后让当前 Mod 也清掉自己的本地演出/选择门闩（旧 Mod 没有该钩子时跳过）。
+  // 只重置展示状态，不提交动作；权威局面由大厅全量快照重画。
+  recover: () => {
+    const game = state.session ? state.catalog.find(g => g.id === state.session.modId) : null
+    try { modUiFor(game)?.recoverAfterStall?.() } catch { /* Mod 恢复钩子异常不影响大厅恢复 */ }
+  } })
 const updatesUi = createUpdatesUI({ h, state, render, request: rawApi, reloadCatalog })
 // 反馈弹窗是 body 级 portal：挂在这里而不是 renderApp() 里，整页重绘时 iframe 不会被重建。
 const feedbackUi = createFeedbackUI({ h, state, request: rawApi })
@@ -605,7 +611,16 @@ function renderApp() {
   for (const [id, ui] of modUis) if (id !== overlayGame?.id) ui.onDeactivate?.()
   for (const overlay of modUiFor(overlayGame)?.renderOverlays?.() || []) consoleEl.append(overlay)
   if (state.error && !state.setup) {
-    consoleEl.append(h('div', { className: 'bg-toast', onclick: () => { state.error = null; render() } }, state.error))
+    const onlineRoom = !!state.online?.room
+    consoleEl.append(h('div', { className: 'bg-toast', onclick: () => { state.error = null; render() } },
+      h('span', {}, state.error),
+      // 联机错误就地给一个恢复入口：不用滚回房间栏找「强制同步」。
+      onlineRoom ? h('button', { className: 'bg-toast-action', type: 'button', onclick: event => {
+        event.stopPropagation()
+        state.error = null
+        render()
+        onlineUi.forceResync().catch(() => { state.error = t('online.resync.failed'); render() })
+      } }, t('online.resync.label')) : null))
   }
   return consoleEl
 }

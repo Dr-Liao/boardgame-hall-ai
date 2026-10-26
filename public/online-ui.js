@@ -1,10 +1,11 @@
 import { createP2P } from './p2p.js'
 import { t } from './i18n.js'
 
-export function createOnlineUI({ h, state, render, renderChrome = render, request, loadGame, perf = null, hydrate = null }) {
+export function createOnlineUI({ h, state, render, renderChrome = render, request, loadGame, perf = null, hydrate = null, recover = null }) {
   // perf 是 app.js 在 ?perf=1 时注入的 createPerfRecorder()；不传时全部埋点分支都不执行。
   const p2p = createP2P({ request, onChange: renderChrome, perf })
   let serial = -1, appliedSerial = -1, timer, working = false
+  let resyncing = false
   let renderQueued = false
   let instanceId
   const retiredInstances = new Set()
@@ -45,7 +46,8 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       render()
     })
   }
-  function accept(value) {
+  function accept(value, options = {}) {
+    const forceApply = options.force === true
     // apply 的同步耗时：state.online/state.session 更新 + p2p.update；提前返回的旧响应也记一条（sessionChanged=false）。
     const perfStarted = perf ? performance.now() : 0
     const recordApply = sessionChanged => {
@@ -64,22 +66,40 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     if (value.serial < serial) { recordApply(false); return { changed: false } }
     let changed = serial !== value.serial
     const wasOnline = !!state.online?.room
+    // P3.1：服务器确认「本地已是同一份会话」（sessionOmitted）时只更新 busy/lobby 等在线字段，
+    // 不重建会话、不触发 loadGame；慢请求回滚的保护由上面的 serial 判断负责。
+    const sessionOmitted = value.sessionOmitted === true && !!previousSession
+    // 忙碌期间收到的快照只记 serial、不应用，唯一的副本留在 state.online.session 里。
+    // sessionOmitted 表示「内容与上次发给本浏览器的视图完全相同」，响应里不再带 session；
+    // 若直接用它覆盖 state.online 就会丢掉这份待应用视图：之后服务端在等本玩家行动、
+    // serial 不再变化，长轮询一路挂到超时，界面永远停在旧 revision（再点只会拿到
+    // STALE_REVISION）。所以把上次视图保留在响应对象上，等忙碌结束后补应用。
+    if (sessionOmitted && !value.session && previousOnline?.session) value.session = previousOnline.session
     serial = value.serial; state.online = value
     p2p.update(value)
     if (!relayUrl && value.relayUrl) setAddress(value.relayUrl)
     if (value.room) {
       state.setup = null
-      // P3.1：服务器确认「本地已是同一份会话」（sessionOmitted）时只更新 busy/lobby 等在线字段，
-      // 不重建会话、不触发 loadGame；慢请求回滚的保护由上面的 serial 判断负责。
-      const sessionOmitted = value.sessionOmitted === true && !!state.session
       // P1.4：应用会话前先 hydrate 公共静态表；本地没有匹配版本时保留当前完整视图，
       // 等大厅在后续响应里补发 static（失败模式只会是「慢一拍」，不会把精简会话当完整视图渲染）。
       const nextSession = value.session ? (hydrate ? hydrate(value.session) : value.session) : null
+      // 强制同步（用户手动恢复）时不受本地忙碌/聊天在途影响，直接应用权威视图。
+      const canApplySession = forceApply || (!state.busy && !(state.chat.pendings || []).length)
       if (sessionOmitted) {
         changed ||= appliedSerial !== value.serial
+        // 忙碌期间收到、还没应用的视图：忙碌结束后即使 serial 没变也要补应用
+        // （正常路径里这份视图会随下一次带 session 的响应重新到达，长轮询在等待
+        // 本玩家行动时却不会有下一次，必须在这里兜底）。
+        if (nextSession && canApplySession
+            && sessionStamp(state.session) !== sessionStamp(nextSession)) {
+          state.session = nextSession; state.view = 'game'
+          appliedSerial = value.serial
+          loadGame(state.catalog.find(g => g.id === nextSession.modId))
+          changed = true
+        }
       } else if (value.session && !nextSession) {
         // 等静态表；本次不应用这份精简会话。
-      } else if (nextSession && !state.busy && !(state.chat.pendings || []).length) {
+      } else if (nextSession && canApplySession) {
         // Busy actions defer applying snapshots, not just rendering them.
         // Remember that deferred work even if its serial was already observed.
         changed ||= appliedSerial !== value.serial
@@ -250,6 +270,55 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       throw error
     }
   }
+  /**
+   * 强制同步（卡住恢复）：把本客户端手动拉回房主的权威局面。
+   * 覆盖三类阻塞：①丢过快照/界面停在旧 revision；②异常中断的行动把本地 busy/movePending
+   * 留在 true；③房主快照基线错乱导致长轮询只回 sessionOmitted。
+   * 只重建展示状态，不提交任何游戏动作；房主的对局状态不会被这个按钮改变。
+   */
+  async function forceResync() {
+    if (!state.online?.room || resyncing) return false
+    resyncing = true
+    notice = t('online.resync.pending')
+    renderChrome()
+    let synced = false
+    try {
+      // ① 先解除本地门闩（不是对局状态）：异常中断的行动可能留下 busy/movePending。
+      state.busy = false
+      state.movePending = null
+      state.error = null
+      // ② 请房主重置快照基线并广播一份完整快照；客人经 relay，房主本地直接执行。
+      //    失败也继续走 ③（例如房主暂时离线时至少把本厅能拿到的最新视图画出来）。
+      let targetRevision = null
+      try {
+        const result = await request('POST', '/online/command', { action: 'sync', body: {} })
+        if (Number.isInteger(result?.session?.state?.revision)) targetRevision = result.session.state.revision
+      } catch { /* 连接不可用时继续尝试下面的全量 status */ }
+      // ③ 无条件拉全量（full=1 跳过长轮询等待与 sessionOmitted/delta 判定），强制应用。
+      serial = -1
+      appliedSerial = -1
+      for (const delay of [0, 150, 600]) {
+        if (delay) await new Promise(resolve => setTimeout(resolve, delay))
+        const value = await request('GET', '/online/status?full=1')
+        accept(value, { force: true })
+        const reached = state.session && (targetRevision === null || state.session.state.revision >= targetRevision)
+        // 等待房间还没有 session 是正常状态：房间/准备信息同步成功即视为恢复。
+        const lobbyOnly = !state.session && state.online?.room?.phase !== 'playing'
+        if (reached || lobbyOnly) { synced = true; break }
+      }
+      if (!state.session && state.online?.room?.phase === 'playing') synced = false
+      // ④ 让当前 Mod 清掉自己的本地演出/选择门闩（旧 Mod 没有该钩子时跳过）。
+      try { recover?.() } catch { /* Mod 恢复钩子异常不影响大厅恢复 */ }
+      notice = !synced ? t('online.resync.failed')
+        : state.online?.busy ? t('online.resync.busy') : t('online.resync.done')
+    } catch {
+      notice = t('online.resync.failed')
+    } finally {
+      resyncing = false
+      render()
+    }
+    return synced
+  }
   const memberStatus = member => {
     const status = !member.online ? t('online.room.disconnected') : member.ready ? t('online.room.ready') : t('online.room.notReady')
     return member.host ? t('online.room.hostStatus', { status }) : status
@@ -266,6 +335,11 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
         h('span', { className: 'bg-online-meta' }, h('span', { className: 'bg-room-code' }, t('online.room.code', { code: room.code })), h('span', { role: 'status' }, t('online.banner.seat', { connection, seat: Number(me?.seat) + 1 })))),
       h('div', { className: 'bg-online-actions' },
         h('button', { className: 'bg-btn secondary bg-copy-invite', 'aria-label': t('online.copyInvite'), onclick: copyInvite }, copied ? t('online.copied') : t('online.copyInvite')),
+        // 卡住恢复入口：任何操作看起来卡死时都可点；不依赖 working/busy，点了就强制拉回权威局面。
+        h('button', { className: 'bg-btn secondary bg-online-resync', type: 'button', 'aria-busy': String(resyncing),
+          title: t('online.resync.title'), 'aria-label': t('online.resync.title'), disabled: resyncing,
+          onclick: () => { forceResync().catch(() => { notice = t('online.resync.failed'); render() }) } },
+        resyncing ? t('online.resync.pending') : t('online.resync.label')),
         h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = true; state.settingsTab = 'online'; render() } }, t('online.settingsButton')),
         h('button', { className: 'bg-btn danger', disabled: working, onclick: () => run(leave) }, me?.host ? t('online.dissolveRoom') : t('online.leaveRoom'))),
       online.error ? h('p', { role: 'alert', className: 'bg-online-notice' }, online.error) : null,
@@ -335,7 +409,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     notice = ''
   }
   return { setupFields, setupSettings, settingsPanel, create, command, leave, loadSave, banner, waitingRoom, joinModal, boot,
-    onLocaleChange,
+    onLocaleChange, forceResync,
     applyPending: () => state.online && accept(state.online),
     joinButton: () => h('button', { className: 'bg-btn secondary', onclick: () => { notice = ''; modal = true; render() } }, t('online.join.joinButton')) }
 }
