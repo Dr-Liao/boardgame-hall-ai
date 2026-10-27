@@ -12,6 +12,7 @@
 | --- | --- | --- |
 | `games/gobang` | 双人对弈 | 五子棋，Mod 的参考实现 |
 | `games/ox` | 双人对弈 | 井字棋 |
+| `games/poker` | 四人组队 | “扑克合集”开局界面可选掼蛋；双副牌、对家组队、升级、进贡与还贡，支持本地 AI 或多人混合席位，带伪 3D 牌桌 |
 | `games/arkhamhorror` | 合作卡牌 | 诡镇奇谈：卡牌版，独立仓库 [boardgame-arkhamhorror](https://github.com/Dr-Liao/boardgame-arkhamhorror)（按需克隆到 `games/arkhamhorror`，大厅不跟踪），见 [诡镇 README](games/arkhamhorror/README.md) |
 
 ---
@@ -129,6 +130,8 @@ Windows 首次运行可能提示「打开文件 - 安全警告」并显示「未
 AI 角色的核心是 `persona`（人设），这段文本会原样注入 system prompt，决定 AI 怎么行动、说什么话。默认内置《蔚蓝档案》的 5 位角色（花冈柚子、才羽桃、才羽绿、天童爱丽丝、天童凯伊），详见 [角色设定说明](docs/ai-personas.md)。
 
 在「⚙️ 设置 → AI → AI 角色」中可编辑人设和头像（emoji 或图片）。重启时，未改动过的默认角色会自动更新，自己编辑或新建的角色会保留。
+
+一局里同一个 AI（同名也算）只能上场一次：随机补位会避开已出场的角色，手动选座时已被其他座位选走的 AI 会显示为不可选；角色数量不够时开局会提示先新增 AI 角色，而不是让同名 AI 坐两席。
 
 ### 合作类游戏与 AI 队友
 

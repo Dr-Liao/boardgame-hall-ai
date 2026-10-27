@@ -449,6 +449,20 @@ test('reserved AI seats survive relay restart, block joins, and preserve the cho
   assert.deepEqual(started.session.actingSeats, [0, 2], 'AI seats finish the simultaneous phase on their own')
 })
 
+test('reserved AI seats deduplicate duplicate picks and random picks before the room opens', async t => {
+  const { halls: [host], relayUrl } = await fixture(t)
+  const created = await host.call('create', {
+    relayUrl, modId: CARDS, capacity: 4,
+    aiSeats: [{ seat: 1, aiId: 'ai-hu' }, { seat: 3, aiId: 'ai-hu' }, { seat: 2 }],
+  })
+  assert.equal(created.ok, true, created.error)
+  const names = created.room.aiSeats.map(item => item.name)
+  assert.equal(names.length, 3)
+  assert.equal(new Set(names).size, names.length, 'AI 席位不能出现同名角色')
+  const status = await host.call('status')
+  assert.deepEqual(status.room.aiSeats, created.room.aiSeats, '重连/状态刷新不能改掉已分好的角色')
+})
+
 test('online saves reopen as joinable rooms and preserve seats, private state and pending choices', async t => {
   const { halls: [host, guest, third], relayUrl, mods } = await fixture(t, 3, true)
   const local = async (route, body) => (await fetch(host.origin + '/api/' + route, {
