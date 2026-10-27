@@ -1798,11 +1798,13 @@ function renderTacticalChat(session) {
   // Count incoming messages even while an unrelated modal hides the chat.
   const hidden = state.setup || state.settingsOpen || modUiFor(state.catalog.find(game => game.id === session.modId))?.isModalOpen?.()
   const notifications = chatNotifications.sync(session, { open: state.chat.open, channel: state.chat.channel, visible: !hidden && !document.hidden })
+  // 牌桌 Mod 可自行在座位旁显示新消息；这里只抑制消息 toast，聊天入口和未读红点照常保留。
+  const chatAtSeats = modUiFor(state.catalog.find(game => game.id === session.modId))?.chatPresentation === 'seats'
   clearTimeout(chatToastTimer)
   if (hidden) return null
   const surface = h('div', { className: 'bg-chat-surface' })
   const openChannel = channel => { state.chat.channel = channel; state.chat.open = true; resetChatState(); render() }
-  if (notifications.toasts.length) {
+  if (notifications.toasts.length && !chatAtSeats) {
     surface.append(h('div', { className: 'bg-chat-toasts', role: 'status', 'aria-live': 'polite', 'aria-label': t('chat.newMessagesAria') },
       notifications.toasts.map(({event}) => h('div', { className: 'bg-chat-toast', 'data-chat-seq': event.seq },
         h('button', { className: 'bg-chat-toast-open', onclick: () => openChannel(chatChannel(event, session.mySeat ?? 0)), 'aria-label': t('chat.viewMessageAria', { name: chatSeatName(session,event.seat) }) },

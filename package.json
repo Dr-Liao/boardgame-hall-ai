@@ -11,7 +11,7 @@
     "repo": "Dr-Liao/boardgame-hall-ai",
     "cdn": "https://drliao1.com/hall/",
     "registry": "https://raw.githubusercontent.com/Dr-Liao/boardgame-hall-ai/main/registry/index.json",
-    "liteGames": ["gobang", "ox"]
+    "liteGames": ["gobang", "ox", "poker"]
   },
   "workspaces": [
     "games/*"

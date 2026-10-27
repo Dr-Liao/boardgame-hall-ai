@@ -1,5 +1,6 @@
 import { createP2P } from './p2p.js'
 import { t } from './i18n.js'
+import { HUMAN_SEAT, RANDOM_AI, dedupeSeatChoices, seatAiChoices } from './ai-seats.js'
 
 export function createOnlineUI({ h, state, render, renderChrome = render, request, loadGame, perf = null, hydrate = null, recover = null }) {
   // perf 是 app.js 在 ?perf=1 时注入的 createPerfRecorder()；不传时全部埋点分支都不执行。
@@ -162,10 +163,13 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
   }
   function setupFields(game) {
     const setup = state.setup, count = capacity(game), min = setup.online ? Math.max(2, game.players[0]) : game.players[0]
-    setup.onlineSeats ||= []
-    setup.form.opponents ||= []
+    // 同一局里同一个 AI 只能坐一个座位：默认值/旧状态里的重复选择先就地改成随机，
+    // 下拉框再把「已被其他座位选走」的角色禁用，避免再选出第二个同名 AI。
+    const seats = setup.online
+      ? (setup.onlineSeats = dedupeSeatChoices(setup.onlineSeats || [], state.ais))
+      : (setup.form.opponents = dedupeSeatChoices(setup.form.opponents || [], state.ais))
     const picker = (options, value, label, change) => h('select', { className: 'bg-select', 'aria-label': label, onchange: e => { change(e.target.value); render() } },
-      options.map(option => h('option', { value: String(option.value), selected: String(option.value) === String(value) }, option.label)))
+      options.map(option => h('option', { value: String(option.value), selected: String(option.value) === String(value), disabled: option.disabled === true }, option.label)))
     return h('section', { className: 'bg-seat-setup', 'aria-label': t('online.setup.modeLabel') },
       h('div', { className: 'bg-play-modes', role: 'group', 'aria-label': t('online.setup.modeGroup') },
         [false, true].map(online => h('button', { type: 'button', 'aria-pressed': String(!!setup.online === online), onclick: () => { setup.online = online; capacity(game); render() } },
@@ -175,10 +179,15 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       h('div', { className: 'bg-seat-list' },
         h('div', { className: 'bg-seat-row' }, h('span', { className: 'bg-seat-number' }, '1'), h('div', {}, h('strong', {}, state.config?.playerName || t('online.setup.you')), h('small', {}, setup.online ? t('online.setup.hostSeat') : t('online.setup.yourSeat')))),
         Array.from({ length: count - 1 }, (_, i) => {
-          const selected = setup.online ? setup.onlineSeats[i] || '__human__' : setup.form.opponents[i] || '__random__'
+          const selected = setup.online ? seats[i] || HUMAN_SEAT : seats[i] || RANDOM_AI
+          const choices = seatAiChoices(state.ais, seats, i)
           return h('label', { className: 'bg-seat-row' }, h('span', { className: 'bg-seat-number' }, String(i + 2)),
-            picker([...(setup.online ? [{ value: '__human__', label: t('online.setup.waitingPlayerOption') }] : []), { value: '__random__', label: t('online.setup.randomAi') },
-              ...state.ais.map(ai => ({ value: ai.id, label: ai.name }))], selected, setup.online ? t('online.setup.seatPickerLabel', { seat: i + 2 }) : t('online.setup.aiSlotLabel', { index: i + 1 }), value => {
+            picker([...(setup.online ? [{ value: HUMAN_SEAT, label: t('online.setup.waitingPlayerOption') }] : []), { value: RANDOM_AI, label: t('online.setup.randomAi') },
+              ...choices.map(ai => ({
+                value: ai.id,
+                label: ai.used ? ai.name + t('online.setup.aiAlreadySeated') : ai.name,
+                disabled: ai.used,
+              }))], selected, setup.online ? t('online.setup.seatPickerLabel', { seat: i + 2 }) : t('online.setup.aiSlotLabel', { index: i + 1 }), value => {
                 if (setup.online) setup.onlineSeats[i] = value
                 else setup.form.opponents[i] = value
               }))

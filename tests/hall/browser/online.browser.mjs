@@ -134,6 +134,12 @@ test('generic setup reserves AI slots and copying an invitation never shifts the
   await host.getByRole('combobox', { name: '席位数量' }).selectOption('4')
   await host.getByRole('combobox', { name: '席位 2', exact: true }).selectOption('ai-hu')
   await host.getByRole('combobox', { name: '席位 4', exact: true }).selectOption('ai-mei')
+  // 同一局同一个 AI 只能坐一个座位：其他座位下拉框里已上场的角色必须禁用。
+  const seat3 = host.getByRole('combobox', { name: '席位 3', exact: true })
+  expect(await seat3.locator('option[value="ai-hu"]').evaluate(option => option.disabled)).toBe(true)
+  expect(await seat3.locator('option[value="ai-mei"]').evaluate(option => option.disabled)).toBe(true)
+  expect(await host.getByRole('combobox', { name: '席位 2', exact: true }).locator('option[value="ai-hu"]').evaluate(option => option.disabled)).toBe(false)
+  await expect(seat3.locator('option[value="ai-hu"]')).toHaveText('才羽绿（已上场）')
   await host.screenshot({ path: 'artifacts/online-unified-setup.png', fullPage: true })
   await host.getByRole('button', { name: '开始对局', exact: true }).click()
   await expect(host.getByRole('heading', { name: '等待玩家加入' })).toBeVisible()
