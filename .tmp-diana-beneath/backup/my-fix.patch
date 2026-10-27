@@ -1,0 +1,601 @@
+﻿diff --git a/docs/card-model.md b/docs/card-model.md
+index 3412bdd..81b1e7b 100644
+--- a/docs/card-model.md
++++ b/docs/card-model.md
+@@ -351,6 +351,14 @@ state.history = { round: [...], phase: [...], turn: [...] }      // C6：本回
+    或压牌本身（`beneath:<code>`、`hunch:<code>`），否则牌桌永远点不出这些动作。
+ 2. **能力不上桌**：`beneath` / `attachedCards` / `attachments` 上的牌不参与 `cardAbility` 枚举，
+    只有宿主声明的通道（如 `beneathPlayAsIfInHand`、`playAttachedEvents`）能把它们变成可打出的动作。
++3. **「如同其在你的手牌中」要接满所有出牌通道**：`beneathPlayAsIfInHand`（05013 银暮匕首）目前覆盖
++   四类窗口——普通行动 `legalMoves`（`fromBeneath`）、技能检定投入（`tests.js` 的 `beneath:<卡号>`）、
++   快速事件的反应窗口（`encounter.js` 的 `reactionWindow`，候选 id `beneath:<序号>`）与
++   `fromHand` 反应描述子的能力窗口（`ability-exec.js` 的 `openAbilityWindow`，候选 id
++   `…:beneath:<序号>`）。新增「如同手牌」的通道时这几类窗口都要接，否则表现是「底下的牌看得见但
++   在某个窗口里用不了」；反应/能力窗口的两类候选带 `cardCode`，`choicePresentation` 会把它们挂回
++   `beneath:<卡号>`，玩家点牌桌「下方」的牌与点手牌同义。（收尾玩家窗口的 0 费快速卡目前仍只枚举
++   手牌；底下的快速事件按规则走各自的反应窗口。）
+ 
+ 回归护栏：`tests/cards-under-ui.test.mjs`（卡面表 / 动作匹配 / 选择面板卡图 / 免费行动死按钮）与
+ `tests/cards-under.browser.mjs`（桌面 1440 与移动 390 的可见性与点选）。
+diff --git a/src/cards/entries/05013.js b/src/cards/entries/05013.js
+index d6e82d1..b7e8b4c 100644
+--- a/src/cards/entries/05013.js
++++ b/src/cards/entries/05013.js
+@@ -24,6 +24,18 @@
+ // 没有声明「按哪种行动结算」，被 actionKind 归为普通行动 → 发动攻击前先吃一次借机攻击。
+ // 补 countsAs:'fight' + noOpportunityAttack（与 05114 切肉刀同一写法；读点见 actionKind /
+ // dispatch.js 的 abilityNoAoO，规则见 docs/card-model.md §5b）。
++//
++// 2026-10-27 修复（反应窗口通道）：卡面「如同其在你的手牌中」此前只在三条路径接了 beneath：
++// 普通行动打出（moves.js）、技能检定投入（tests.js）、旧印加入手牌（05004）。玩家实际最常用的
++// 两条窗口没有接——
++//   · 快速事件的反应窗口（encounter.js 的 reactionWindow）：底下的 05014 黑暗洞察 / 01023 闪躲
++//     等取消卡永远不出现在窗口候选里；现在候选带 fromBeneath，选中后横置匕首、从底下移进手牌、
++//     走 playReactionCard 的同一套付费/结算/弃牌路径，期间置 state._playedFromBeneath；
++//   · fromHand 反应描述子的能力窗口（ability-exec.js 的 openAbilityWindow / ability-rules.js 的
++//     descriptorUsable）：05280 否决存在这类「快速。在遭遇/攻击造成伤害时打出」的卡只从手牌枚举，
++//     现在同一通道补 beneath 候选，执行时把卡移进手牌走 executeDescriptor 的手牌口径。
++// 界面侧 web/card-interactions.js 的 choicePresentation 把两类候选挂回牌桌「下方」的牌，
++// 技能检定投入的 beneath 选项也带 cardCode（src/engine/tests.js），点下方的牌与点手牌同义。
+ 
+ export default {
+   code: '05013',
+diff --git a/src/engine/ability-exec.js b/src/engine/ability-exec.js
+index 0e18f14..6240c31 100644
+--- a/src/engine/ability-exec.js
++++ b/src/engine/ability-exec.js
+@@ -295,6 +295,25 @@ function openAbilityWindow(state, windowId, context, events, opts = {}) {
+           }
+         }
+       }
++      // 2026-10-27 修复 05013（银暮匕首）：卡面「你可以打出或投入黛安娜·史丹利底下的事件和技能，
++      // 如同其在你的手牌中」。fromHand 的反应/免费描述子（如 05280 否决存在）此前只从手牌枚举，
++      // 底下的牌永远进不了能力窗口。这里补 beneath 通道：通道支援未横置时，把底下事件的
++      // fromHand 反应描述子加成候选；可用性由 descriptorUsable 的 fromBeneath 分支判定，
++      // 结算时再把卡移进手牌走 executeDescriptor 的同一套付费/结算/弃牌口径。
++      {
++        const beneathChannel = (inv.assets || []).find(asset =>
++          registeredEntry(asset.code)?.beneathPlayAsIfInHand === true && !asset.exhausted)
++        if (beneathChannel) {
++          for (const [index, code] of (inv.beneath || []).entries()) {
++            const beneathEntry = registeredEntry(code)
++            if (!beneathEntry?.abilities.length) continue
++            for (const descriptor of descriptorsInEntry(beneathEntry, windowId, 'reaction')) {
++              if (!descriptor.fromHand || descriptor.legacyReaction) continue
++              candidates.push({ source: null, code, descriptor, fromBeneathIndex: index })
++            }
++          }
++        }
++      }
+       // 2026-10-25 第五轮修复（05111/05234/05277）：beforePlayCost 窗口里，正在被打出的卡已在
+       // actions.js 先移出手牌、到窗口才枚举，descriptorSources 找不到它；把它的条目能力补成候选来源。
+       if (windowId === 'beforePlayCost' && context?.cardCode && inv.seat === context.seat) {
+@@ -313,13 +332,17 @@ function openAbilityWindow(state, windowId, context, events, opts = {}) {
+       while (guard++ < 12) {
+         // 窗口上下文被取消（如「建议」取消攻击）后不再枚举同一窗口的后续反应。
+         if (context?.cancelled) break
+-        const usable = candidates.filter(item => descriptorUsable(state, inv, item.source, item.descriptor, { windowId, context }))
++        const usable = candidates.filter(item => descriptorUsable(state, inv, item.source, item.descriptor,
++          { windowId, context, fromBeneath: item.fromBeneathIndex != null }))
+         if (!usable.length) break
+         const options = [{ id: 'skip', label: '不触发' }]
+-        // 手牌里的两张同名卡是不同候选：id 必须带上 fromHandIndex，否则重复。
++        // 手牌里的两张同名卡是不同候选：id 必须带上 fromHandIndex，否则重复；
++        // 底下的同名卡同理带上 fromBeneathIndex（且与手牌候选区分开）。
+         const candidateKey = item => `desc:${item.descriptor.id}:${item.source?.id ?? item.effect?.id ?? 'hand'}:${item.fromHandIndex ?? ''}`
++          + (item.fromBeneathIndex != null ? `:beneath:${item.fromBeneathIndex}` : '')
+         for (const item of usable) {
+-          options.push({ id: candidateKey(item), label: `【能力】${cardName(item.code)}：${item.descriptor.label}`, cardCode: item.code })
++          options.push({ id: candidateKey(item), label: `【能力】${cardName(item.code)}：${item.descriptor.label}${
++            item.fromBeneathIndex != null ? '（银暮匕首：下方）' : ''}`, cardCode: item.code })
+         }
+         const answer = requestChoice(state, {
+           kind: 'reaction', source: { type: 'window', when: windowId }, seat: inv.seat, canSkip: true,
+@@ -329,6 +352,28 @@ function openAbilityWindow(state, windowId, context, events, opts = {}) {
+         if (answer === 'skip') break
+         const chosen = usable.find(item => candidateKey(item) === answer)
+         if (!chosen) break
++        // 2026-10-27 修复 05013（银暮匕首）：beneath 通道触发的 fromHand 描述子——横置通道支援、
++        // 把卡从底下移进手牌，再交给 executeDescriptor 走与「从手牌打出」完全相同的付费/结算/弃牌口径；
++        // 结算期间置 state._playedFromBeneath（以此方式打出时不能触发 05004 黛安娜的 reaction）。
++        if (chosen.fromBeneathIndex != null) {
++          const beneathChannel = (inv.assets || []).find(asset =>
++            registeredEntry(asset.code)?.beneathPlayAsIfInHand === true && !asset.exhausted)
++          const at = (inv.beneath || []).indexOf(chosen.code)
++          if (!beneathChannel || at < 0) break
++          beneathChannel.exhausted = true
++          inv.beneath.splice(at, 1)
++          inv.hand.push(chosen.code)
++          const previousBeneath = state._playedFromBeneath
++          state._playedFromBeneath = { seat: inv.seat, cardCode: chosen.code }
++          try {
++            executeDescriptor(state, { inv, source: chosen.source, descriptor: chosen.descriptor, context, events,
++              windowId, fromHandIndex: inv.hand.length - 1, effect: chosen.effect })
++          } finally {
++            if (previousBeneath === undefined) delete state._playedFromBeneath
++            else state._playedFromBeneath = previousBeneath
++          }
++          continue
++        }
+         // 2026-10-25 第七轮修复 05033：符号效果的「取消 / 再一次」标志（05033 在窗口内写入 state.skillTest.symbolEffect）。
+         if (windowId === 'symbolRevealed' && state.skillTest?.symbolEffect) {
+           const symbolEffect = state.skillTest.symbolEffect
+diff --git a/src/engine/ability-rules.js b/src/engine/ability-rules.js
+index 4421f36..f1d7eab 100644
+--- a/src/engine/ability-rules.js
++++ b/src/engine/ability-rules.js
+@@ -93,7 +93,7 @@ export function createAbilityRules(deps) {
+     return descriptor.kind === 'free' ? { ...descriptor.cost, action: false } : descriptor.cost
+   }
+ 
+-  function descriptorUsable(state, inv, source, descriptor, { windowId = null, context = {}, mode = 'window' } = {}) {
++  function descriptorUsable(state, inv, source, descriptor, { windowId = null, context = {}, mode = 'window', fromBeneath = false } = {}) {
+     const timing = state.timingWindow
+     if (mode === 'free') {
+       if (descriptor.kind !== 'free') return false
+@@ -115,8 +115,14 @@ export function createAbilityRules(deps) {
+     if (limitUsed(state, inv, descriptor, context, windowId, source)) return false
+     // 手牌事件按打出费用结算，不套用资产的「横置/充能」检查。
+     if (descriptor.fromHand) {
+-      // 手牌事件必须先还在手里（反应窗口可能在结算后再次枚举）。
+-      if (!(inv.hand || []).includes(descriptor.code)) return false
++      // 2026-10-27 修复 05013（银暮匕首）：「如同其在你的手牌中」——底下的 fromHand 描述子
++      // （如 05280 否决存在）也要能在同一个窗口里可选。fromBeneath 由调用方（能力窗口）标记，
++      // 这里把「牌必须在手牌」换成「牌仍在底下 + 通道支援未横置」，其余费用/条件判定完全复用。
++      if (fromBeneath) {
++        if (!(inv.beneath || []).includes(descriptor.code)) return false
++        if (!(inv.assets || []).some(asset =>
++          registeredEntry(asset.code)?.beneathPlayAsIfInHand === true && !asset.exhausted)) return false
++      } else if (!(inv.hand || []).includes(descriptor.code)) return false
+       const def = cardDef(descriptor.code)
+       if (!def) return false
+       if (cannotPlayTypes(inv).has(def.type)) return false
+diff --git a/src/engine/encounter.js b/src/engine/encounter.js
+index 50c8e2e..7942bde 100644
+--- a/src/engine/encounter.js
++++ b/src/engine/encounter.js
+@@ -46,6 +46,8 @@ export function createEncounter(deps) {
+     effectError,
+     enemyDef,
+     evaluateCriteria,
++    // 2026-10-27 修复 05002：直觉牌库揭示牌的 -2 折扣（反应窗口候选与玩家窗口都走同一读点）。
++    hunchDeck,
+     info,
+     investigatorTextBlanked,
+     isAutomaticReward,
+@@ -247,11 +249,33 @@ function reactionWindow(state, when, context, events, opts = {}) {
+           code: attachment.code, fromAttachedEventOf: asset.id,
+           id: `attached:${asset.id}:${attachment.code}:${attachment.id ?? ''}`,
+         })))
++      // 2026-10-27 修复 05013（银暮匕首）：卡面「你可以打出或投入黛安娜·史丹利底下的事件和技能，
++      // 如同其在你的手牌中」。旧实现只给普通行动（legalMoves）与技能检定投入接了 beneath 通道，
++      // **快速事件的反应窗口**没有接：底下的快速事件（含 reactionOnly 的取消卡，如 05014 黑暗洞察 /
++      // 01023 闪躲）永远不会出现在反应窗口里，玩家只看到「底下有牌但点不了」。
++      // 这里补同一通道：额外费用=横置通道支援；结算走 playReactionCard（与手牌快速事件同一份
++      // 付费/结算/去向口径），结算期间置 state._playedFromBeneath（05004 的 reaction 不得触发）。
++      const beneathCandidates = []
++      {
++        const beneathChannel = (inv.assets || []).find(asset =>
++          registeredEntry(asset.code)?.beneathPlayAsIfInHand === true && !asset.exhausted)
++        if (beneathChannel) {
++          for (const [index, code] of (inv.beneath || []).entries()) {
++            if (cardDef(code)?.type !== 'event') continue
++            beneathCandidates.push({ code, fromBeneath: true, beneathIndex: index, id: `beneath:${index}` })
++          }
++        }
++      }
+       const candidates = [...handCandidates,
+         ...planCandidates,
+         ...attachedCandidates,
++        ...beneathCandidates,
++        // 2026-10-27 修复 05002：乔·戴蒙德的直觉牌库揭示牌「如同你的手牌」——快速事件
++        // （如 01022 证据！：击败一个敌人后打出）也要出现在对应反应窗口里。打出走
++        // playReactionCard 的 fromHunch 通道（清 hunchRevealed、按 -2 费用支付）。
++        ...(inv.hunchRevealed ? [{ code: inv.hunchRevealed, fromHunch: true, id: 'hunch' }] : []),
+         ...(discardEvent ? [{ code: discardEvent, fromDiscard: true, id: 'discard' }] : [])]
+-        .filter(({ code, copyCode }) => {
++        .filter(({ code, copyCode, fromHunch }) => {
+           // Phase 5（5c-8）：快速事件也可以在能力层声明——`kind:'played'` + `fast` + `trigger:<窗口>`，
+           // 条件写在 criteria 的旧字段里。两条通道共用下面同一份条件判定。
+           const descriptor = descriptorOfKind(copyCode || code, 'played')
+@@ -284,7 +308,9 @@ function reactionWindow(state, when, context, events, opts = {}) {
+             && !(Number(context.difficulty) > Number(context.baseValue ?? 0))) return false
+           if (cannotPlayTypes(inv).has(cardDef(copyCode || code)?.type)) return false
+           if (scenarioBehavior(state).canPlayCard?.(state, inv, cardDef(copyCode || code)) === false) return false
+-          if (inv.resources < playCost(state, inv, cardDef(copyCode || code))) return false
++          // 2026-10-27 修复 05002：直觉牌库揭示牌按 -2 费用支付，候选可用性与实付共用同一折扣。
++          const hunchDiscount = fromHunch ? (hunchDeck.playDiscount(state, inv, code) || 0) : 0
++          if (inv.resources < Math.max(0, playCost(state, inv, cardDef(copyCode || code)) - hunchDiscount)) return false
+           // 04111 坚韧不拔等：criteria 写成函数/数组的新通道（旧的对象形字段展开保持原样）。
+           if (descriptor?.criteria
+             && (Array.isArray(descriptor.criteria) || typeof descriptor.criteria === 'function')
+@@ -300,9 +326,10 @@ function reactionWindow(state, when, context, events, opts = {}) {
+         kind: 'reaction', source: { type: 'window', when }, seat: inv.seat, canSkip: true,
+         prompt: `是否打出快速反应卡？（${context.prompt}）`,
+         options: [{ id: 'skip', label: '不打出' },
+-          ...candidates.map(({ code, copyCode, id, fromDiscard }) => ({ id, cardCode: code,
++          ...candidates.map(({ code, copyCode, id, fromDiscard, fromBeneath, fromHunch }) => ({ id, cardCode: code,
+             label: (copyCode ? `彩绘世界复制「${cardName(copyCode)}」` : cardName(code))
+-              + (fromDiscard ? '（护身符：弃牌）' : '') }))],
++              + (fromDiscard ? '（护身符：弃牌）' : '') + (fromBeneath ? '（银暮匕首：下方）' : '')
++              + (fromHunch ? '（直觉牌库）' : '') }))],
+       })
+       if (answer === 'skip') break
+       const chosen = candidates.find(item => item.id === answer)
+@@ -327,6 +354,36 @@ function reactionWindow(state, when, context, events, opts = {}) {
+         }
+         continue
+       }
++      // 2026-10-27 修复 05013：beneath 通道打出的快速事件——横置通道支援、从底下移进手牌，
++      // 再交给 playReactionCard 走与手牌快速事件完全相同的付费/结算/弃牌路径。
++      // 「以此方式打出或投入卡牌时，你不能触发黛安娜的 reaction」由 _playedFromBeneath 表达。
++      if (chosen.fromBeneath) {
++        const channel = (inv.assets || []).find(asset =>
++          registeredEntry(asset.code)?.beneathPlayAsIfInHand === true && !asset.exhausted)
++        const at = (inv.beneath || []).indexOf(chosen.code)
++        if (!channel || at < 0) break
++        channel.exhausted = true
++        inv.beneath.splice(at, 1)
++        inv.hand.push(chosen.code)
++        const previousBeneath = state._playedFromBeneath
++        state._playedFromBeneath = { seat: inv.seat, cardCode: chosen.code }
++        try {
++          playReactionCard(state, inv, inv.hand.length - 1, context, events)
++        } finally {
++          if (previousBeneath === undefined) delete state._playedFromBeneath
++          else state._playedFromBeneath = previousBeneath
++        }
++        continue
++      }
++      // 2026-10-27 修复 05002：直觉牌库揭示的快速事件——折扣在清标记前读取，结算走
++      // playReactionCard 的 fromHunch 通道（与手牌快速事件共用付费/结算/弃牌路径）。
++      if (chosen.fromHunch) {
++        const code = inv.hunchRevealed
++        if (!code || code !== chosen.code) break
++        const discount = hunchDeck.playDiscount(state, inv, code) || 0
++        playReactionCard(state, inv, null, context, events, false, null, null, discount)
++        continue
++      }
+       playReactionCard(state, inv, chosen.index, context, events, chosen.fromDiscard, chosen.copyCode, chosen.fromPlanAssetId)
+     }
+   }
+@@ -459,7 +516,9 @@ function fastHandPlays(state, inv) {
+   const helpers = playConditionHelpers(state)
+   return legalMoves(state).filter(move => move.action === 'play' && move.cardId
+     && !move.fromDiscard && !move.fromPlanAssetId && !move.fromBackpackId && !move.copyCode
+-    && inv.hand.includes(move.cardId)
++    && !move.fromBeneath && !move.fromAttachedEventOf
++    // 2026-10-27 修复 05002：直觉牌库揭示牌也「如同手牌」，同样要出现在收尾窗口里。
++    && (move.fromHunch === true ? inv.hunchRevealed === move.cardId : inv.hand.includes(move.cardId))
+     && actionCost(state, inv, move) === 0
+     // legalMoves 只做「区域/类型/费用」级筛选，打出条件由 validateMove 读；
+     // 窗口里的快速卡必须同样过一遍，否则会绕过「只能在你回合期间打出」这类限制。
+@@ -529,11 +588,15 @@ function playerWindow(state, timing, events, restrictedSeat = null, opts = {}) {
+     }
+     if (inv.seat === fastCardSeat) {
+       for (const move of fastHandPlays(state, inv)) {
+-        if (blockedFast.has(move.cardId)) continue
+-        const resourceCost = playCost(state, inv, cardDef(move.cardId))
+-        options.push({ id: `fast-card:${move.cardId}`,
+-          label: `⚡ 快速打出「${cardName(move.cardId)}」${resourceCost ? `（${resourceCost} 资源）` : ''}`,
+-          cardCode: move.cardId })
++        // 2026-10-27 修复 05002：直觉牌库揭示的快速卡用 `fast-card:hunch:<卡号>` 作 option id，
++        // 牌桌据此把选项映射回直觉区那张牌；费用同样按 -2 折扣预览（与实付同源）。
++        const optionId = move.fromHunch ? `fast-card:hunch:${move.cardId}` : `fast-card:${move.cardId}`
++        if (blockedFast.has(optionId)) continue
++        const discount = move.fromHunch ? (hunchDeck.playDiscount(state, inv, move.cardId) || 0) : 0
++        const resourceCost = Math.max(0, playCost(state, inv, cardDef(move.cardId)) - discount)
++        options.push({ id: optionId,
++          label: `⚡ 快速打出「${cardName(move.cardId)}」${move.fromHunch ? '（直觉牌库）' : ''}${resourceCost ? `（${resourceCost} 资源）` : ''}`,
++          cardCode: move.cardId, fromHunch: move.fromHunch === true })
+       }
+     }
+     if (!options.length) { passed++; continue }
+@@ -546,10 +609,32 @@ function playerWindow(state, timing, events, restrictedSeat = null, opts = {}) {
+     passed = 0
+     const chosen = options.find(option => option.id === answer)
+     if (chosen.cardCode) {
++      // 2026-10-27 修复 05002：直觉牌库揭示的快速卡——把揭示牌临时当手牌打进，
++      // -2 折扣经 playDiscount 走与 dispatch.fromHunch 完全相同的付费口径。
++      if (chosen.fromHunch) {
++        const before = inv.hand.filter(code => code === chosen.cardCode).length
++        const discount = hunchDeck.playDiscount(state, inv, chosen.cardCode) || 0
++        inv.hunchRevealed = null
++        inv.hand.push(chosen.cardCode)
++        inv.playDiscount = (inv.playDiscount || 0) + discount
++        try {
++          doPlay(state, inv.seat, chosen.cardCode, events, false, true)
++        } finally {
++          delete inv.playDiscount
++        }
++        const after = state.investigators[inv.seat]
++        if (after.hand.filter(code => code === chosen.cardCode).length > before) {
++          // 没能真正打出（例如结算前条件变化）：还原临时手牌与揭示标记，避免窗口反复询问。
++          after.hand.splice(after.hand.indexOf(chosen.cardCode), 1)
++          if (after.hunchRevealed == null) after.hunchRevealed = chosen.cardCode
++          blockedFast.add(chosen.id)
++        }
++        continue
++      }
+       const before = inv.hand.filter(code => code === chosen.cardCode).length
+       doPlay(state, inv.seat, chosen.cardCode, events, false, true)
+       const after = state.investigators[inv.seat].hand.filter(code => code === chosen.cardCode).length
+-      if (after >= before) blockedFast.add(chosen.cardCode)
++      if (after >= before) blockedFast.add(chosen.id)
+       continue
+     }
+     if (chosen.freeCode) {
+diff --git a/src/engine/tests.js b/src/engine/tests.js
+index 3f8b496..5f29fbe 100644
+--- a/src/engine/tests.js
++++ b/src/engine/tests.js
+@@ -298,8 +298,11 @@ function performTest(state, seat, skill, difficulty, options = {}) {
+           : `${inv.name} 请求协助${skillLabel}检定；你可以投入一张牌，或放弃协助。`, canSkip: true,
+         options: [...(canFinish ? [{ id: 'done', label: owner === inv ? '开始检定' : '放弃协助' }] : []),
+           ...(owner === inv && helpers.length ? [{ id: 'help', label: '求助' }] : []),
+-          ...candidates.map(item => ({ id: item.beneath ? `beneath:${item.code}` : String(item.index),
+-            label: (item.beneath ? '投入（底下）：' : '投入：') + cardName(item.code) }))] })
++          // 2026-10-27 修复 05013：beneath 候选也带 cardCode，界面据此把选项画成卡面，
++          // 并让牌桌「下方」的牌成为可点的投入入口（web/card-interactions.js 的 choicePresentation）。
++          ...candidates.map(item => (item.beneath
++            ? { id: `beneath:${item.code}`, cardCode: item.code, label: '投入（底下）：' + cardName(item.code) }
++            : { id: String(item.index), label: '投入：' + cardName(item.code) }))] })
+       if (answer === 'done') break
+       if (answer === 'help') {
+         state.skillTest.helpRequested = true
+diff --git a/tests/cards-under-ui.test.mjs b/tests/cards-under-ui.test.mjs
+index 593b85c..afed3fd 100644
+--- a/tests/cards-under-ui.test.mjs
++++ b/tests/cards-under-ui.test.mjs
+@@ -89,6 +89,39 @@ test('带 cardCode 的选择（beneath / openingHand / hunchDeck）会画出候
+   }
+ })
+ 
++// ---- 3b. 银暮匕首：反应/能力/投入窗口的 beneath 候选挂回「下方」的牌 -----------------
++
++// 2026-10-27 修复 05013 的桌面读点：匕首「如同其在你的手牌中」的候选（快速事件窗口 id
++// `beneath:<序号>`、fromHand 能力窗口 id `…:beneath:<序号>`、技能检定投入 id `beneath:<卡号>`）
++// 都要能把动作挂回调查员下方的牌；否则玩家点下方的牌没有任何反应，只能翻底部选项面板。
++test('银暮匕首的 beneath 候选在反应/能力/投入窗口都挂回「下方」的牌', () => {
++  const cards = {
++    '05014': { code: '05014', name: '黑暗洞察', nameZh: '黑暗洞察', type: 'event' },
++    '05324': { code: '05324', name: '美满结局', nameZh: '美满结局', type: 'event' },
++    '01025': { code: '01025', name: '急救', nameZh: '急救', type: 'skill' },
++  }
++  const base = {
++    currentSeat: 0, cards,
++    investigators: [{ seat: 0, code: '05004', hand: [], beneath: ['05014', '05324', '01025'], assets: [] }],
++  }
++  const cases = [
++    ['reaction', 'beneath:0', '05014'],                     // 快速事件反应窗口
++    ['reaction', 'desc:05324#0:hand::beneath:1', '05324'],  // fromHand 反应能力窗口
++    ['commit', 'beneath:01025', '01025'],                   // 技能检定投入
++  ]
++  for (const [kind, optionId, code] of cases) {
++    const st = { ...base,
++      pendingChoice: { id: 'q', kind, seat: 0, canSkip: true,
++        options: [{ id: 'skip', label: '跳过' }, { id: optionId, cardCode: code, label: '候选' }] },
++      legalMoves: [{ action: 'choose', choiceId: 'q', optionId, label: '候选' }] }
++    const items = choicePresentation(st)
++    assert.equal(items.find(item => item.key === 'beneath:' + code)?.code, code,
++      kind + '：' + code + ' 的候选要挂回「下方」的牌')
++    assert.equal(entityMoves(st, 'beneath:' + code).length, 1,
++      kind + '：点下方的牌应能直接回答当前窗口')
++  }
++})
++
+ // ---- 4. 免费行动的「预览 = 校验」 --------------------------------------------------
+ 
+ function withInvestigator(code) {
+diff --git a/tests/tcu-investigators.test.mjs b/tests/tcu-investigators.test.mjs
+index 7bde01c..a2903bf 100644
+--- a/tests/tcu-investigators.test.mjs
++++ b/tests/tcu-investigators.test.mjs
+@@ -751,10 +751,12 @@ test('P6 故事调查员：减弱检定难度的能力（瓦伦蒂诺）', () =>
+ // 11. task-22 / task-30 修复回归（调查员与专属卡）
+ // ---------------------------------------------------------------------------
+ 
+-test('task-22 05010 悬案：作为弱点事件打出，放线索到最高隐藏值地点并移出游戏', () => {
++test('fix 05010 悬案：直觉牌库揭示时作为弱点事件打出，放线索到最高隐藏值地点并移出游戏', () => {
+   const state = investigatorFixture('05002')
+   const inv = me(state)
+-  inv.hand = ['05010']
++  // 真实流程：揭示牌不进手牌，只记 inv.hunchRevealed（旧测试靠 hand 兜底，掩盖了 fromHunch 通道
++  // 用 !isWeaknessCard 一刀切、弱点事件打不出的问题）。
++  inv.hand = []
+   inv.hunchRevealed = '05010'
+   inv.clues = 2
+   inv.resources = 10
+@@ -764,11 +766,13 @@ test('task-22 05010 悬案：作为弱点事件打出，放线索到最高隐藏
+   const maxShroud = Math.max(...numeric.map(location => location.shroud || 0))
+   const candidates = numeric.filter(location => (location.shroud || 0) === maxShroud)
+   const before = Object.fromEntries(state.locations.map(location => [location.id, location.clues || 0]))
+-  const playMove = legalMoves(state).find(moveOption => moveOption.action === 'play' && moveOption.cardId === '05010')
+-  assert.ok(playMove, '悬案应当可以作为弱点事件打出（playableWeakness + played 描述子）')
++  const playMove = legalMoves(state).find(moveOption => moveOption.action === 'play'
++    && moveOption.cardId === '05010' && moveOption.fromHunch === true)
++  assert.ok(playMove, '悬案应当能从直觉牌库揭示通道打出（playableWeakness 放行弱点事件）')
+   move(state, playMove)
+   settle(state, pending => (pending.kind === 'location' ? pending.options[0].id : null))
+   const after = me(state)
++  assert.equal(after.resources, 8, '揭示窗口 -2 费用：4 - 2 = 2')
+   assert.ok((state.removedFromGame || []).includes('05010'), '打出后移出游戏（removeAfterPlay）')
+   assert.equal((after.discard || []).includes('05010'), false, '不进入弃牌堆')
+   assert.equal(after.hunchRevealed ?? null, null, '打出后清掉直觉牌库揭示标记（避免阶段末重复洗回）')
+@@ -778,6 +782,36 @@ test('task-22 05010 悬案：作为弱点事件打出，放线索到最高隐藏
+   assert.equal(placed, true, '1 个线索放到隐藏值最高的地点之一')
+ })
+ 
++test('fix 05010 悬案：在威胁区也能打出（playableFromThreat），放线索并移出游戏', () => {
++  const state = investigatorFixture('05002')
++  const inv = me(state)
++  inv.hand = []
++  inv.hunchRevealed = null
++  inv.threat = [{ id: 'threat-05010', code: '05010' }]
++  inv.clues = 2
++  inv.resources = 10
++  inv.discard = []
++  state.removedFromGame = []
++  const numeric = state.locations.filter(location => typeof location.shroud === 'number')
++  const maxShroud = Math.max(...numeric.map(location => location.shroud || 0))
++  const candidates = numeric.filter(location => (location.shroud || 0) === maxShroud)
++  const before = Object.fromEntries(state.locations.map(location => [location.id, location.clues || 0]))
++  const playMove = legalMoves(state).find(moveOption => moveOption.action === 'play'
++    && moveOption.cardId === '05010' && moveOption.threatId === 'threat-05010')
++  assert.ok(playMove, '威胁区里的悬案应当可以打出（条目级 playableFromThreat）')
++  move(state, playMove)
++  settle(state, pending => (pending.kind === 'location' ? pending.options[0].id : null))
++  const after = me(state)
++  assert.equal(after.resources, 6, '威胁区打出按印刷费用 4 支付（没有揭示窗口的 -2 折扣）')
++  assert.equal((after.threat || []).some(card => card.code === '05010'), false, '打出后离开威胁区')
++  assert.ok((state.removedFromGame || []).includes('05010'), '打出后移出游戏（removeAfterPlay）')
++  assert.equal((after.discard || []).includes('05010'), false, '不进入弃牌堆')
++  assert.equal(after.clues, 1, '消耗 1 个线索')
++  const placed = candidates.some(location =>
++    (state.locations.find(item => item.id === location.id)?.clues || 0) === (before[location.id] || 0) + 1)
++  assert.equal(placed, true, '1 个线索放到隐藏值最高的地点之一')
++})
++
+ test('task-22 05013 银暮匕首：攻击可以选择战斗或意志（原先固定用意志）', () => {
+   const build = () => {
+     const state = investigatorFixture('05004')
+@@ -1186,6 +1220,7 @@ test('fix 05010 悬案：scenarioXpModifier 已登记，供结局 XP 结算读
+     '条目级字段（引擎读点 src/engine/campaign-flow.js:252-260）')
+   assert.equal(registeredEntry('05010').avoidHunchShuffle, true)
+   assert.equal(registeredEntry('05010').playableWeakness, true)
++  assert.equal(registeredEntry('05010').playableFromThreat, true)
+   assert.equal(registeredEntry('05010').removeAfterPlay, true)
+ })
+ 
+@@ -1843,6 +1878,93 @@ test('R7 05013 beneath：从底下打出 03153 灵力风暴不引发借机攻击
+   assert.equal(state.enemies.find(item => item.id === 'storm-enemy')?.damageTaken, 2, '灵力风暴正常结算 2 点伤害')
+ })
+ 
++// ---------------------------------------------------------------------------
++// 2026-10-27：05013「如同其在你的手牌中」——反应窗口里的 beneath 通道
++// （旧实现只给普通行动与技能检定投入接了 beneath；快速事件/fromHand 反应窗口没有接，
++//   玩家看到黛安娜底下有牌、匕首在场却始终点不出可用动作。）
++// ---------------------------------------------------------------------------
++test('05013 beneath 通道：底下的快速事件出现在反应窗口，选中后横置匕首并正常进弃牌堆', () => {
++  const state = investigatorFixture('05004')
++  const inv = me(state)
++  inv.hand = []
++  inv.resources = 10
++  inv.deck = ['01088', '01088']
++  inv.beneath = ['05014']
++  inv.assets = [{ id: 'dagger', code: '05013', exhausted: false }]
++  let offered = null
++  let answered = false
++  run(state, current => {
++    reactionWindow(current, 'encounterDrawn', {
++      when: 'encounterDrawn', seat: 0, location: current.investigators[0].location,
++      cardCode: '01037', prompt: '测试遭遇',
++    }, [])
++  }, pending => {
++    if (pending.kind !== 'reaction') return null
++    const option = pending.options.find(item => item.cardCode === '05014')
++    if (option && !answered) { offered = option; answered = true; return option.id }
++    if (pending.options.some(item => item.id === 'skip')) return 'skip'
++    return null
++  })
++  assert.ok(offered, '底下的快速事件（05014 黑暗洞察）必须出现在反应窗口候选里')
++  assert.match(offered.label, /银暮匕首/, '候选要标出「从下方用银暮匕首打出」')
++  const after = me(state)
++  assert.equal(after.assets.find(item => item.id === 'dagger')?.exhausted, true, '额外费用：横置银暮匕首')
++  assert.deepEqual(after.beneath, [], '卡从 beneath 移出')
++  assert.ok(after.discard.includes('05014'), '打出后按普通快速事件进弃牌堆')
++  assert.equal(after.hand.length, 0, '不会重复加入手牌')
++  assert.equal(state._playedFromBeneath, undefined, '结算后恢复 beneath 结算标记')
++})
++
++test('05013 beneath 通道：底下的 fromHand 反应描述子（05324）在能力窗口可触发', () => {
++  const state = investigatorFixture('05004')
++  const inv = me(state)
++  inv.hand = []
++  inv.resources = 10
++  inv.beneath = ['05324']
++  inv.assets = [{ id: 'dagger', code: '05013', exhausted: false }]
++  let offered = null
++  let flipped = false
++  run(state, current => {
++    const ctx = {
++      when: 'negativeTokenRevealed', seat: 0, location: current.investigators[0].location,
++      token: '-2', testValue: 0, flipTokenSign: false, prompt: '测试负修正',
++    }
++    reactionWindow(current, 'negativeTokenRevealed', ctx, [])
++    if (ctx.flipTokenSign) flipped = true
++  }, pending => {
++    if (pending.kind !== 'reaction') return null
++    const option = pending.options.find(item => item.cardCode === '05324')
++    if (option && !offered) { offered = option; return option.id }
++    if (pending.options.some(item => item.id === 'skip')) return 'skip'
++    return null
++  })
++  assert.ok(offered, '底下的 fromHand 反应（05324 美满结局）必须出现在能力窗口候选里')
++  assert.match(offered.label, /银暮匕首/)
++  assert.equal(flipped, true, '从底下触发的反应正常结算（把负修正翻成正修正）')
++  const after = me(state)
++  assert.equal(after.assets.find(item => item.id === 'dagger')?.exhausted, true, '额外费用：横置银暮匕首')
++  assert.deepEqual(after.beneath, [], '卡从 beneath 移出')
++  assert.ok(after.discard.includes('05324'), '反应事件结算后进弃牌堆')
++  assert.equal(after.resources, 8, '按手牌口径支付 05324 的 2 资源')
++})
++
++test('05013 beneath 通道：匕首横置时底下的牌也不出现在反应窗口', () => {
++  const state = investigatorFixture('05004')
++  const inv = me(state)
++  inv.hand = []
++  inv.resources = 10
++  inv.beneath = ['05014']
++  inv.assets = [{ id: 'dagger', code: '05013', exhausted: true }]
++  run(state, current => {
++    reactionWindow(current, 'encounterDrawn', {
++      when: 'encounterDrawn', seat: 0, location: current.investigators[0].location,
++      cardCode: '01037', prompt: '测试遭遇',
++    }, [])
++  }, () => null)
++  assert.equal(state.pendingChoice, null, '通道支援横置后不再给出 beneath 候选（窗口直接关闭）')
++  assert.deepEqual(me(state).beneath, ['05014'], '底下的牌保持不动')
++})
++
+ // ---------------------------------------------------------------------------
+ // 第七轮（R7）：05006 玛丽·朗博 —— 毁灭→法术专用额度联动
+ // ---------------------------------------------------------------------------
+diff --git a/web/card-interactions.js b/web/card-interactions.js
+index 576b899..f3338d8 100644
+--- a/web/card-interactions.js
++++ b/web/card-interactions.js
+@@ -25,6 +25,33 @@ export function choicePresentation(st) {
+       const code = owner?.hand?.[Number(id)]
+       if (code) return { ...item, key: `hand:${owner.seat}:${id}`, code }
+     }
++    // 2026-10-27 修复 05013：银暮匕首「如同其在你的手牌中」——反应窗口（快速事件）、能力窗口
++    // （fromHand 反应）与技能检定投入里的 beneath 候选用「beneath:<卡号>」或「…:beneath:<序号>」
++    // 作 id，并带 cardCode。这里把它们挂回牌桌「下方」的牌：点下方的牌与点手牌同义，
++    // 直接回答当前窗口，而不是像修复前那样只能从底部选项面板里找。
++    if (option?.cardCode && (choice.kind === 'commit' ? id.startsWith('beneath:') : id.includes('beneath:'))
++      && (owner?.beneath || []).includes(option.cardCode)) {
++      return { ...item, key: `beneath:${option.cardCode}`, code: option.cardCode,
++        cards: [{ ...(st.cards?.[option.cardCode] || {}), code: option.cardCode }] }
++    }
++    // 2026-10-27 修复 05002：乔·戴蒙德的直觉牌库揭示牌「如同你的手牌」——快速事件在反应窗口里
++    // option id 固定为 'hunch'，在收尾玩家窗口里是 'fast-card:hunch:<卡号>'。挂回牌桌直觉区的
++    // 那张牌：点它等于点手牌，直接回答当前窗口（牌桌上没有实体时仍可点底部选项按钮）。
++    if (id === 'hunch' && option?.cardCode) {
++      const hunch = (st.hunch || []).find(entry => entry.seat === choice.seat)
++      if (hunch?.revealed === option.cardCode) {
++        return { ...item, key: `hunch:${option.cardCode}`, code: option.cardCode,
++          cards: [{ ...(st.cards?.[option.cardCode] || {}), code: option.cardCode }] }
++      }
++    }
++    if (choice.kind === 'playerWindow' && id.startsWith('fast-card:hunch:')) {
++      const code = id.slice('fast-card:hunch:'.length)
++      const hunch = (st.hunch || []).find(entry => entry.seat === choice.seat)
++      if (hunch?.revealed === code) {
++        return { ...item, key: `hunch:${code}`, code,
++          cards: [{ ...(st.cards?.[code] || {}), code }] }
++      }
++    }
+     if (['turnOrder', 'investigator', 'prey', 'storyCard'].includes(choice.kind)) {
+       const inv = st.investigators.find(inv => String(inv.seat) === id)
+       if (inv) return { ...item, key: `investigator:${inv.seat}`, code: inv.code }
