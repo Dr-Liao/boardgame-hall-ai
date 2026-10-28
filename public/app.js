@@ -161,6 +161,8 @@ async function api(method, pathname, body) {
     const actions = {
       '/move': 'move', '/reset': 'reset', '/chat': 'chat', '/ai/retry': 'aiRetry',
       '/session/save': 'save', '/session/fork-checkpoint': 'forkCheckpoint',
+      // 调试控制台（Mod 自带面板）：联机走 host-only 的 debug 命令，客人由房主端硬拒绝。
+      '/debug': 'debug',
       // P1：自动跳过偏好同步（Mod 在开关变化/进局/重连时调用；与 move 走同一联机命令通道）。
       '/prefs': 'prefs',
     }
@@ -477,11 +479,35 @@ document.addEventListener('compositionend', () => {
 
 function refreshOnlineBanner() {
   const oldBanner = root.querySelector('.bg-console > .bg-online-banner')
+  const hadFocus = !!oldBanner && oldBanner.contains(document.activeElement)
   const nextBanner = onlineUi.banner()
   if (oldBanner && nextBanner) oldBanner.replaceWith(nextBanner)
   else if (oldBanner) oldBanner.remove()
   else if (nextBanner) root.querySelector('.bg-console')?.prepend(nextBanner)
+  placeOnlineBanner()
+  // 展开/收起会替换整块悬浮栏：把焦点还给新的切换按钮，键盘/读屏用户不会掉回页面开头。
+  if (hadFocus && nextBanner) nextBanner.querySelector('.bg-online-toggle')?.focus({ preventScroll: true })
 }
+
+// 悬浮联机栏贴在当前 Mod 头部下方：各 Mod 的标题栏高度不同（桌面/移动、是否换行），
+// 不用固定 top，避免收起后的胶囊盖住牌桌自己的标题和按钮；没有头部（等待房间）时贴顶。
+function placeOnlineBanner() {
+  const banner = root.querySelector('.bg-console > .bg-online-banner')
+  if (!banner) return
+  const gameHead = root.querySelector('.bg-console .bg-game-head, .bg-console .gd-head')
+  const top = gameHead ? Math.max(8, Math.round(gameHead.getBoundingClientRect().bottom + 8)) : 12
+  banner.style.setProperty('--bg-online-banner-top', top + 'px')
+}
+
+let onlineBannerPlacementFrame = 0
+function scheduleOnlineBannerPlacement() {
+  if (onlineBannerPlacementFrame) return
+  onlineBannerPlacementFrame = requestAnimationFrame(() => {
+    onlineBannerPlacementFrame = 0
+    placeOnlineBanner()
+  })
+}
+window.addEventListener('resize', scheduleOnlineBannerPlacement)
 
 function patchAppWhileChatting(nextConsole, active) {
   if (!active?.classList?.contains('bg-chat-input') || active.value !== String(state.chat.draft || '')) return false
@@ -552,6 +578,7 @@ function renderNow(options = {}) {
   const next = renderApp()
   const keptChatInput = patchAppWhileChatting(next, active)
   if (!keptChatInput) root.replaceChildren(next)
+  placeOnlineBanner()
   root.querySelectorAll('.bg-modal').forEach((el, index) => { el.scrollTop = modalScroll[index] || 0 })
   const chatList = root.querySelector('.bg-chat-list')
   if (chatList) chatList.scrollTop = chatList.scrollHeight

@@ -14,6 +14,13 @@ async function api(index, route, body) {
   return (await fetch(halls[index].url + '/api/online/' + route, { method: body ? 'POST' : 'GET', headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })).json()
 }
 const command = (index, action, body = {}) => api(index, 'command', { action, body: { operationId: randomUUID(), ...body } })
+// 联机栏默认收起成右上角悬浮胶囊；需要操作按钮（复制邀请/解散房间等）时先点开。
+async function expandOnlineBanner(page) {
+  const toggle = page.locator('.bg-online-banner .bg-online-toggle')
+  await toggle.waitFor()
+  if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click()
+  await expect(page.locator('.bg-online-banner .bg-online-actions')).toBeVisible()
+}
 test.beforeAll(async () => {
   previousHome = process.env.DSH_HOME
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-online-browser-')); process.env.DSH_HOME = home
@@ -69,6 +76,7 @@ test('two players create/join in the hall, alternate turns, chat and refresh', a
   await expect(guest.locator('.bg-cell-white')).toHaveCount(1)
   await expect(guest.getByRole('button', { name: '再来一局' })).toBeDisabled()
   await host.screenshot({ path: 'artifacts/online-room-game.png', fullPage: true })
+  await expandOnlineBanner(host)
   await host.getByRole('button', { name: '解散房间' }).click()
   await expect(guest.getByRole('heading', { name: '🎲 桌游大厅' })).toBeVisible()
   expect(errors).toEqual([])
@@ -148,6 +156,7 @@ test('generic setup reserves AI slots and copying an invitation never shifts the
   await expect(host.getByRole('button', { name: '开始联机对局' })).toBeDisabled()
   const status = await api(0, 'status')
   expect(status.relayUrl).toContain(relayUrl.replace('http:', 'ws:'))
+  await expandOnlineBanner(host)
   await host.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.testInvite = text } } }))
   for (const width of [1400, 390]) {
     await host.setViewportSize({ width, height: 950 })

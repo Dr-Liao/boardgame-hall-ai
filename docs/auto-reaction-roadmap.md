@@ -509,16 +509,20 @@ CSS 要点：
 - **界面**：角色面板名字右侧 24px 三态按钮，`skip` 暗闪电+斜杠、`ask` 亮闪电、`auto` 亮齿轮旋转；
   长名字省略号，按钮不缩/不换行。卡面与卡牌详情复用同一个按钮：有旧式反应的资产卡（如米兰）是三态；
   只有快速开关的卡是两态 skip ↔ ask（同一颗闪电，不再有「反应开/反应关」文字）；资产卡不再显示
-  神智角标，伤害/恐惧扣除标记移到左侧，不与右上角按钮重叠；卡面已有经验/弱点角标时按钮左移，
-  双面角标下移。
+  神智角标，伤害/恐惧扣除标记移到左侧，不与右上角按钮重叠；卡面已有经验/弱点角标时角标排到按钮左侧
+  （窄卡位压缩角标），双面角标下移。
 - **后续调整（2026-10-26）**：两态卡原先保留的文字开关（「反应开/反应关」）也并入三态按钮的闪电外观，
   卡面/详情/角色面板现在只有一颗可开关的闪电图标；两态卡用 `role="switch"` + `aria-checked`，
   hover 仍说明开启/关闭。旧 class `.ah-reaction-toggle` 与 `data-reaction-toggle` 已移除。
+- **后续调整（2026-10-28）**：经验/弱点角标与反应按钮换位——按钮固定贴卡面右上角最右，角标改排在按钮
+  左侧（22px 按钮 + 4px 间距）；44–48px 的窄卡位（下方/直觉/威胁栏、手机装备槽）把角标缩小并贴紧按钮，
+  两边都不被 `overflow:hidden` 裁掉。`player-dashboard.browser.mjs` 对装备卡（桌面/390）与 48px
+  下方卡断言「角标在左、按钮贴最右、完整在卡内」。
 - **测试**：
   - 完整卡牌清单见 [quick-reaction-cards.md](quick-reaction-cards.md) / [quick-reaction-cards.csv](quick-reaction-cards.csv)；
   - `tests/hall/auto-reaction.test.mjs`：默认 auto / ask / skip / 四座位链 / ask 中断 / sidecar 重启恢复；
   - `npm run test:hall` 全绿；
-  - `player-dashboard.browser.mjs` 全绿（含三态按钮循环、齿轮动画、长名字省略、米兰/升级版米兰资产卡按钮、扣除标记、经验角标不重叠）；
+  - `player-dashboard.browser.mjs` 全绿（含三态按钮循环、齿轮动画、长名字省略、米兰/升级版米兰资产卡按钮、扣除标记、经验角标在左/反应按钮贴最右且不重叠，含 390 窄屏与 48px 下方卡）；
   - Arkham 定向测试（auto-pass、reaction-preferences、save-migration、i18n、notz golden replay）全绿。
 - **已知非本功能失败**（干净 HEAD 上同样存在，未改基线）：
   - `carcosa-curtain-call-hub` / `-only` 的初始状态指纹与旧基线不一致（`ffee…` vs `7ba…`）；

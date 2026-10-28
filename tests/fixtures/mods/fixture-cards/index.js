@@ -68,9 +68,29 @@ function legalMoves(state, seat) {
     : [{ action: 'pass' }]
 }
 
+// 调试控制台（大厅 host-only 调试通道）的最小契约样本：debug 指令不进 legalMoves，
+// 只能经 debugCommand 解析后由大厅以 commitMove({ debug: true }) 提交。
+function isDebugMove(move) {
+  return move?.action === 'debug'
+}
+
+function debugCommand(session, seat, command) {
+  const text = String(command?.text || '').trim()
+  if (text === 'help') return { move: null, message: '调试帮助：count N（累加测试计数）' }
+  if (!text.startsWith('count')) throw new Error('未知调试指令')
+  const amount = Number(text.slice('count'.length).trim())
+  if (!Number.isSafeInteger(amount) || amount < 1 || amount > 999) throw new Error('调试数量必须是 1..999 的整数')
+  return {
+    move: { action: 'debug', kind: 'count', amount, targetSeat: command?.targetSeat ?? seat },
+    message: '调试计数 +' + amount,
+  }
+}
+
 function validateMove(state, seat, move) {
   if (!move || typeof move !== 'object') return '动作必须是对象'
   if (state.status !== 'playing') return '对局已结束'
+  // 调试动作由大厅专用通道提交，不受应答座位限制；普通 /move 会先被大厅 DEBUG_ONLY 拦截。
+  if (isDebugMove(move)) return Number.isSafeInteger(move.amount) && move.amount > 0 ? null : '无效调试数量'
   if (!actingSeats(state).includes(seat)) return '还没轮到这个席位'
   if (state.phase === 'prep') {
     if (move.action === 'pick') {
@@ -97,6 +117,10 @@ function validateMove(state, seat, move) {
 
 function applyMove(state, seat, move) {
   state.moveCount++
+  if (isDebugMove(move)) {
+    state.debugTotal = (state.debugTotal || 0) + move.amount
+    return [{ type: 'move', seat, move: { ...move } }]
+  }
   if (state.phase === 'prep') {
     if (move.action === 'pick') state.roles[seat] = move.role
     else state.ready[seat] = true
@@ -194,12 +218,14 @@ export default {
   seatLocalMove: (state, seat, move) => state.phase === 'prep' && ['pick', 'ready'].includes(move?.action),
   validateMove,
   applyMove,
+  isDebugMove,
+  debugCommand,
 
   createState(settings, players) {
     const deck = shuffled(settings.seed || 'fixture')
     const state = {
       status: 'playing', winnerSeat: null, currentSeat: 0, moveCount: 0,
-      rulesVersion: RULES_VERSION, phase: 'prep', cards: CARDS,
+      rulesVersion: RULES_VERSION, phase: 'prep', cards: CARDS, debugTotal: 0,
       roles: players.map(() => null), ready: players.map(() => false),
       hands: players.map(() => deck.splice(0, HAND_SIZE)), deck, table: [], pendingChoice: null,
     }

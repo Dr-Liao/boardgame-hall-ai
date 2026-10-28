@@ -9,8 +9,8 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { writeZip, zipDirectory, extractZip } from '../../lib/zip.js'
 import { signEnvelope, verifyEnvelope, keyIdOf } from '../../lib/signing.js'
-import { readPointer, writePointer, markHealthy, cleanupInstall, mergeLooseAppFolder } from '../../lib/install.js'
-import { createUpdater, platformKey } from '../../lib/updater.js'
+import { readPointer, writePointer, markHealthy, cleanupInstall, mergeLooseAppFolder, readEdition } from '../../lib/install.js'
+import { createUpdater, platformKey, validateHallManifest } from '../../lib/updater.js'
 import { buildIndex, indexFileName } from '../../lib/delta.js'
 import { createStore } from '../../lib/store.js'
 import { cdnUrl, fetchText, fetchRange, downloadVerified } from '../../lib/update-common.js'
@@ -124,6 +124,16 @@ test('签名清单：可信公钥通过，篡改、陌生公钥与未配置公�
   assert.throws(() => verifyEnvelope(text, []), /公钥/)
 })
 
+test('签名清单：可选 liteGames 必须是合法的游戏 id 数组', () => {
+  const app = { file: 'BoardgameHall-app-1.1.0.zip', sha256: 'a'.repeat(64), size: 1, dir: 'app-1.1.0' }
+  const base = { schema: 1, kind: 'hall', version: '1.1.0', tag: 'v1.1.0', app, runtimes: {} }
+  assert.equal(validateHallManifest({ ...base }).liteGames, undefined)
+  assert.deepEqual(validateHallManifest({ ...base, liteGames: ['demo', 'new-game'] }).liteGames, ['demo', 'new-game'])
+  assert.throws(() => validateHallManifest({ ...base, liteGames: [] }), /liteGames/)
+  assert.throws(() => validateHallManifest({ ...base, liteGames: 'demo' }), /liteGames/)
+  assert.throws(() => validateHallManifest({ ...base, liteGames: ['Bad Id'] }), /liteGames/)
+})
+
 test('CDN 镜像：地址换算，按 CDN → GitHub → 加速镜像取文件，内容无效换来源，分段下载也先走 CDN', async t => {
   const cdn = { 'Me/Hall': 'https://dl.example.com/hall/' }
   assert.equal(cdnUrl('https://github.com/Me/Hall/releases/latest/download/update-manifest.json', cdn), 'https://dl.example.com/hall/releases/latest/download/update-manifest.json')
@@ -193,11 +203,11 @@ test('版本指针：健康标记、清理旧版本与合并卡图资源包', t 
 
 const asset = (file, extra) => { const data = fs.readFileSync(file); return { file: path.basename(file), sha256: sha256(data), size: data.length, ...extra } }
 
-async function buildHallRelease(dir, { version, runtimeVersion, pem, appMutator }) {
+async function buildHallRelease(dir, { version, runtimeVersion, pem, appMutator, liteGames }) {
   const appRoot = path.join(dir, 'stage', 'app-' + version)
   write(path.join(appRoot, 'portable.mjs'), '')
   write(path.join(appRoot, 'server.js'), '')
-  write(path.join(appRoot, 'package.json'), JSON.stringify({ version }))
+  write(path.join(appRoot, 'package.json'), JSON.stringify({ version, ...(liteGames ? { boardgame: { liteGames } } : {}) }))
   write(path.join(appRoot, 'games', 'demo', 'boardgame-mod.json'), JSON.stringify({ id: 'demo', version: '1.0.0', hallApi: 1, preserve: ['web/img/'] }))
   appMutator?.(appRoot)
   const appZip = path.join(dir, `BoardgameHall-app-${version}.zip`)
@@ -210,6 +220,7 @@ async function buildHallRelease(dir, { version, runtimeVersion, pem, appMutator 
   zipDirectory(runtimeRoot, runtimeZip, { prefix: 'runtime-' + runtimeVersion })
   const manifest = signEnvelope({
     schema: 1, kind: 'hall', version, tag: 'v' + version, notes: '更新说明', minLauncher: 2,
+    ...(liteGames ? { liteGames } : {}),
     app: asset(appZip, { dir: 'app-' + version, index: asset(indexFile) }),
     runtimes: { [platformKey()]: asset(runtimeZip, { version: runtimeVersion, dir: 'runtime-' + runtimeVersion }) },
   }, pem)
@@ -245,6 +256,8 @@ test('大厅更新：检查签名清单、下载程序与运行时、保留卡�
   assert.deepEqual(readPointer(root), { app: 'app-1.1.0', runtime: 'runtime-22.1.0', previousApp: 'app-1.0.0', previousRuntime: 'runtime-22.0.0', trial: '1' })
   assert.equal(fs.readFileSync(path.join(root, 'app-1.1.0', 'games', 'demo', 'web', 'img', 'cached.avif'), 'utf8'), 'cached')
   assert.ok(!fs.readdirSync(root).some(name => name.endsWith('.partial')))
+  // 完整版（没有 edition.json）不受 liteGames 影响，也不能被更新凭空创建出来。
+  assert.ok(!fs.existsSync(path.join(root, 'edition.json')))
 })
 
 test('大厅更新：陌生签名与被篡改的程序包都不会改动当前版本', async t => {
@@ -361,6 +374,42 @@ test('大厅增量更新：只下载变化的文件；服务器不支持分段�
   const liteFullRoot = await installOld({ lite: true })
   assert.equal((await update(liteFullRoot)).done.download.mode, 'full')
   assert.ok(!fs.existsSync(path.join(liteFullRoot, 'app-1.1.0', 'games', 'bigmod')), '整包退回时同样跳过未内置的游戏')
+})
+
+test('纯大厅版更新：清单新增的内置游戏会下载，并把新清单写回 edition.json', async t => {
+  const github = await fakeGithub(t)
+  const { pem, trusted } = keyPair()
+  const work = tempDir(t, 'hall-lite-grow-release-')
+  const old = await buildHallRelease(path.join(work, 'old'), { version: '1.0.0', runtimeVersion: '22.0.0', pem, liteGames: ['demo'], appMutator: dir => {
+    write(path.join(dir, 'games', 'demo', 'index.js'), DEMO_MOD)
+  } })
+  const next = await buildHallRelease(path.join(work, 'next'), { version: '1.1.0', runtimeVersion: '22.0.0', pem, liteGames: ['demo', 'newgame'], appMutator: dir => {
+    write(path.join(dir, 'games', 'demo', 'index.js'), DEMO_MOD)
+    write(path.join(dir, 'games', 'newgame', 'index.js'), DEMO_MOD)
+    write(path.join(dir, 'games', 'bigmod', 'index.js'), 'export default {}\n')
+  } })
+  publishHall(github, next, '1.1.0')
+
+  // 旧安装来自只有 demo 的纯大厅版：本地 edition.json 不含新加入的 newgame。
+  const root = tempDir(t, 'hall-lite-grow-install-')
+  await extractZip(old.appZip, path.join(root, 'app-1.0.0'), { prefix: 'app-1.0.0' })
+  await extractZip(old.runtimeZip, path.join(root, 'runtime-22.0.0'), { prefix: 'runtime-22.0.0' })
+  write(path.join(root, 'edition.json'), JSON.stringify({ edition: 'hall-only', games: ['demo'] }))
+  writePointer(root, { app: 'app-1.0.0', runtime: 'runtime-22.0.0' })
+
+  const updater = createUpdater({ repo: 'me/hall', install: { root, launcher: 2 }, keys: trusted, version: '1.0.0', devCheckout: false, getSettings: () => ({ mirror: '' }) })
+  const checked = await updater.check()
+  assert.equal(checked.error, null)
+  updater.download()
+  const done = await waitFor(() => ['ready', 'error'].includes(updater.status().download.state) && updater.status(), 'download')
+  assert.equal(done.download.state, 'ready', done.download.error)
+
+  const app = path.join(root, 'app-1.1.0')
+  assert.ok(fs.existsSync(path.join(app, 'games', 'newgame', 'index.js')), '新增进 liteGames 的游戏应随更新下载')
+  assert.ok(fs.existsSync(path.join(app, 'games', 'demo', 'index.js')))
+  assert.ok(!fs.existsSync(path.join(app, 'games', 'bigmod')), '不在 liteGames 里的内置游戏仍应跳过')
+  assert.deepEqual(readEdition(root).games, ['demo', 'newgame'], 'edition.json 应刷新为新版本的内置游戏清单')
+  assert.equal(readPointer(root).app, 'app-1.1.0')
 })
 
 const MOD_AUDIO = randomBytes(200 * 1024)

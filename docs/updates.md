@@ -108,7 +108,7 @@ GitHub
    ```
 
 3. `.github/workflows/release.yml` 会自动完成以下步骤：
-   - 在 Windows 和 macOS 上构建**纯大厅**免安装包，只内置五子棋和井字棋。诡镇等游戏不随大厅发布，玩家从游戏商店安装；
+   - 在 Windows 和 macOS 上构建**纯大厅**免安装包，只内置根 `package.json` 的 `boardgame.liteGames` 列出的游戏（目前为五子棋、井字棋、扑克合集）。诡镇等游戏不随大厅发布，玩家从游戏商店安装；
    - 编译 Windows 启动器；配置了 `BOARDGAME_SIGN_THUMBPRINT` / `BOARDGAME_SIGN_PFX` / `BOARDGAME_SIGN_COMMAND` 时会给 `桌游大厅.exe` 做代码签名（见 [Windows 的「未知发布者」提示](windows-signing.md)）；
    - 用 `tools/release/pack-update.mjs` 拆出程序包和各平台运行时包。程序包也来自纯大厅版，只有几百 KB；
    - 用 `tools/release/make-manifest.mjs` 生成并签名 `update-manifest.json`；
@@ -122,7 +122,7 @@ GitHub
 | `BoardgameHall-app-<版本>.zip` | 程序包（平台无关，顶层目录 `app-<版本>/`）。增量更新按需从中分段读取，退回整包时才完整下载 |
 | `BoardgameHall-app-<版本>.files.json` | 程序包的文件索引，用于增量更新 |
 | `BoardgameHall-runtime-<平台>-<Node 版本>.zip` | 运行时包，只在 Node 版本变化时下载 |
-| `update-manifest.json` | 签名清单 |
+| `update-manifest.json` | 签名清单（含程序包、运行时与纯大厅版内置游戏清单 `liteGames`） |
 
 注意：引入自动更新的第一个版本需要玩家手动下载完整包，因为旧启动器还不支持版本切换。此后的版本都可以自动更新。
 
@@ -192,7 +192,7 @@ user-data/             存档、配置、AI 角色和下载的游戏，所有版
 edition.json           仅纯大厅版有：列出内置的游戏
 ```
 
-正式发布的是纯大厅版：Windows 用 `build-windows-hall.bat` 或 `npm run build:windows:hall` 构建，macOS 用 `npm run build:mac:hall`。它只内置五子棋和井字棋，诡镇等游戏从游戏商店安装。更新时还会按 `edition.json` 跳过其他内置游戏。所以本地自行构建、内置了诡镇的完整版从 Release 更新时，内置的诡镇不会被带到新版本，需要从商店重新安装（存档不受影响）。
+正式发布的是纯大厅版：Windows 用 `build-windows-hall.bat` 或 `npm run build:windows:hall` 构建，macOS 用 `npm run build:mac:hall`。它只内置根 `package.json` 的 `boardgame.liteGames` 列出的游戏（目前为五子棋、井字棋、扑克合集），诡镇等游戏从游戏商店安装。更新时按签名清单里的 `liteGames` 只下载内置游戏；更新成功后大厅会把这份新清单写回 `edition.json`，所以后来新增进 `liteGames` 的游戏会在下一次更新时一起装上（旧版本遗留的 `edition.json` 不会再把它们过滤掉）。本地自行构建、内置了诡镇的完整版没有 `edition.json`，从 Release 更新时不会带上内置的诡镇，需要从商店重新安装（存档不受影响）。
 
 ### 大厅更新流程
 

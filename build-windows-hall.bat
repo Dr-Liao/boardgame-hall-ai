@@ -4,7 +4,7 @@ pushd "%~dp0"
 if errorlevel 1 goto directory_error
 
 echo Building Boardgame Hall Windows hall-only package...
-echo This package bundles only Gobang and Tic-Tac-Toe; other games install from the in-app game store.
+echo This package bundles only the games listed in package.json boardgame.liteGames; other games install from the in-app game store.
 echo.
 
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\build-windows.ps1" -HallOnly

@@ -112,6 +112,52 @@ test('two halls: ready, authoritative seats, revisions, duplicate operations, ch
   await waitFor(async () => !(await guest.call('status')).room)
 })
 
+test('debug console command is host-only, transactional, and rejected on the normal move path', async t => {
+  const { halls: [host, guest], relayUrl } = await fixture(t)
+  const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 2, settings: { skipPrep: true, seed: 'debug' }, fillAi: false })
+  assert.equal(created.ok, true, created.error)
+  assert.equal((await guest.call('join', { relayUrl, code: created.room.code })).ok, true)
+  await guest.call('ready', { ready: true })
+  const started = await host.command('start')
+  assert.equal(started.ok, true, started.error)
+  const session = started.session
+  assert.equal(session.state.revision, 0)
+
+  // 客人不能调用调试通道（即使 Mod 声明了 debugCommand）。
+  const denied = await guest.command('debug', { revision: 0, command: { text: 'count 2' } })
+  assert.equal(denied.ok, false)
+  assert.match(denied.error, /仅房主/)
+
+  // 房主必须携带当前 revision。
+  const stale = await host.command('debug', { revision: 9, command: { text: 'count 2' } })
+  assert.equal(stale.ok, false)
+  assert.equal(stale.code, 'STALE_REVISION')
+
+  // 房主调试指令：走事务提交，revision +1，返回 debug 消息与 move。
+  const applied = await host.command('debug', { revision: 0, command: { text: 'count 2', targetSeat: 1 } })
+  assert.equal(applied.ok, true, applied.error)
+  assert.equal(applied.session.state.revision, 1)
+  assert.equal(applied.session.state.debugTotal, 2)
+  assert.equal(applied.debug.message, '调试计数 +2')
+  assert.deepEqual(applied.debug.move, { action: 'debug', kind: 'count', amount: 2, targetSeat: 1 })
+  assert.equal(applied.session.events.at(-1).type, 'move')
+
+  // help 只回消息、不提交、不增加 revision。
+  const help = await host.command('debug', { revision: 1, command: { text: 'help' } })
+  assert.equal(help.ok, true, help.error)
+  assert.equal(help.session.state.revision, 1)
+  assert.equal(help.session.state.debugTotal, 2)
+  assert.match(help.debug.message, /调试帮助/)
+
+  // 普通行动通道（含客人伪造）不能夹带 debug 动作。
+  const forged = await host.command('move', { revision: 1, move: { action: 'debug', kind: 'count', amount: 5 } })
+  assert.equal(forged.ok, false)
+  assert.equal(forged.code, 'DEBUG_ONLY')
+  const guestForged = await guest.command('move', { revision: 1, move: { action: 'debug', kind: 'count', amount: 5 } })
+  assert.equal(guestForged.ok, false)
+  assert.equal((await host.call('status')).session.state.debugTotal, 2)
+})
+
 test('three human seats see only their own hands; private chat reaches only its participants', async t => {
   const { halls: [host, guest, third], relayUrl } = await fixture(t, 3)
   const created = await host.call('create', { relayUrl, modId: CARDS, capacity: 3, settings: { seed: 'three-seats' }, fillAi: false })

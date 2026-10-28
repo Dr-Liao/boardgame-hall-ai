@@ -248,3 +248,71 @@ test('prefs 命令走同一条联机命令通道并保留 codes（P1 偏好同�
   assert.deepEqual(sent.body.body.codes, ['01073'])
   assert.equal(sent.body.body.sessionId, 'game')
 })
+
+test('悬浮联机栏默认收起、可展开，收起时保留房间/连接状态与提示并记住选择', async t => {
+  // 需求：联机栏做成悬浮可折叠，不能像通栏一样占牌桌空间。收起时仍要能看到房间码、
+  // 连接状态和强制同步等操作的提示；展开后才能拿到复制邀请/强制同步等操作入口。
+  const oldStorage = globalThis.localStorage, oldWindow = globalThis.window
+  const stored = new Map()
+  globalThis.localStorage = { getItem: key => stored.get(key) ?? '', setItem: (key, value) => stored.set(key, value) }
+  globalThis.window = { addEventListener() {} }
+  t.after(() => {
+    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow
+  })
+  const h = (tag, props, ...children) => ({
+    tag, props: props || {}, children: children.flat(Infinity).filter(child => child != null && child !== false),
+  })
+  const collect = (node, predicate, out = []) => {
+    if (!node || typeof node === 'string') return out
+    if (predicate(node)) out.push(node)
+    for (const child of node.children || []) collect(child, predicate, out)
+    return out
+  }
+  const byClass = (node, name) => collect(node, item => String(item.props?.className || '').split(/\s+/).includes(name))
+  const state = {
+    busy: false, chat: {}, catalog: [],
+    online: {
+      connected: true, busy: false, memberId: 'm-host', relayUrl: '',
+      room: {
+        code: 'F789C780D5', game: { name: '诡镇奇谈：卡牌版' },
+        members: [
+          { id: 'm-host', host: true, seat: 0, online: true, ready: true },
+          { id: 'm-guest', host: false, seat: 1, online: true, ready: false },
+        ],
+      },
+    },
+  }
+  let chromeRenders = 0
+  const ui = createOnlineUI({
+    h, state, render() {}, renderChrome: () => { chromeRenders++ }, loadGame() {},
+    request: async () => ({ ok: true }),
+  })
+  // 默认收起：没有操作区（复制邀请等按钮），胶囊里仍有房间码与「已连接·中转·席位」状态。
+  const collapsed = ui.banner()
+  assert.equal(collapsed.props['data-collapsed'], 'true')
+  assert.equal(byClass(collapsed, 'bg-online-actions').length, 0, '收起时不渲染操作按钮区')
+  const collapsedText = (node => (typeof node === 'string' ? node : (node.children || []).map(collapsedText).join(' ')))
+  assert.match(collapsedText(collapsed), /F789C780D5/)
+  assert.match(collapsedText(collapsed), /已连接 · 中转 · 席位 1/)
+  const toggle = byClass(collapsed, 'bg-online-toggle')[0]
+  assert.equal(toggle.props['aria-expanded'], 'false')
+  assert.equal(toggle.props['aria-label'], '展开联机房间栏')
+  // 点击后只刷新悬浮栏（不整页重绘），展开出操作区并写入持久化选择。
+  toggle.props.onclick()
+  assert.equal(chromeRenders, 1)
+  assert.equal(stored.get('boardgame-hall.online-banner-collapsed'), '0')
+  const expanded = ui.banner()
+  assert.equal(expanded.props['data-collapsed'], 'false')
+  assert.equal(byClass(expanded, 'bg-online-actions').length, 1)
+  assert.equal(byClass(expanded, 'bg-online-toggle')[0].props['aria-expanded'], 'true')
+  assert.ok(collect(expanded, item => item.props?.['aria-label'] === '复制邀请').length, '展开后必须有复制邀请入口')
+  // 收起时错误/提示贴在胶囊下方，不能因为折叠而消失（如从大厅错误 toast 触发强制同步后的结果）。
+  state.online = { ...state.online, error: '联机连接暂不可用' }
+  byClass(expanded, 'bg-online-toggle')[0].props.onclick()
+  const collapsedWithError = ui.banner()
+  assert.equal(collapsedWithError.props['data-collapsed'], 'true')
+  assert.equal(byClass(collapsedWithError, 'bg-online-flash').length, 1)
+  assert.match(collapsedText(collapsedWithError), /联机连接暂不可用/)
+  assert.equal(stored.get('boardgame-hall.online-banner-collapsed'), '1')
+})

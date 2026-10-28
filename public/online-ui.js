@@ -332,6 +332,19 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     const status = !member.online ? t('online.room.disconnected') : member.ready ? t('online.room.ready') : t('online.room.notReady')
     return member.host ? t('online.room.hostStatus', { status }) : status
   }
+  // 悬浮联机栏默认收起，避免像以前的通栏一样一直占着牌桌的纵向空间；用户展开后记住选择。
+  // 收起时仍显示房间码 / 连接 / 席位，并在有新提示时把提示附在胶囊下方，不让关键信息被折叠吞掉。
+  const BANNER_COLLAPSED_KEY = 'boardgame-hall.online-banner-collapsed'
+  let bannerCollapsed = true
+  try { bannerCollapsed = globalThis.localStorage?.getItem(BANNER_COLLAPSED_KEY) !== '0' } catch { /* 无 localStorage 时保持默认收起 */ }
+  function setBannerCollapsed(value) {
+    bannerCollapsed = value
+    try { globalThis.localStorage?.setItem(BANNER_COLLAPSED_KEY, value ? '1' : '0') } catch { /* 隐私模式等写不进去时只影响记忆 */ }
+  }
+  function toggleBanner() {
+    setBannerCollapsed(!bannerCollapsed)
+    renderChrome()
+  }
   function banner() {
     const online = state.online, room = online?.room
     if (!room) return null
@@ -339,21 +352,45 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     // P2.2：AI 在后台思考时显示更明确的状态（旧大厅没有 aiPending 字段时退回原文案）。
     const connection = !online.connected ? t('online.banner.disconnected') : !host?.online ? t('online.banner.hostOffline')
       : online.busy ? (online.aiPending ? t('online.banner.aiThinking') : t('online.banner.processing')) : t('online.banner.connected', { transport: transportText() })
-    return h('section', { className: 'bg-online-banner', 'aria-label': t('online.banner.label') },
-      h('div', { className: 'bg-online-summary' }, h('strong', {}, room.game.name),
-        h('span', { className: 'bg-online-meta' }, h('span', { className: 'bg-room-code' }, t('online.room.code', { code: room.code })), h('span', { role: 'status' }, t('online.banner.seat', { connection, seat: Number(me?.seat) + 1 })))),
-      h('div', { className: 'bg-online-actions' },
-        h('button', { className: 'bg-btn secondary bg-copy-invite', 'aria-label': t('online.copyInvite'), onclick: copyInvite }, copied ? t('online.copied') : t('online.copyInvite')),
-        // 卡住恢复入口：任何操作看起来卡死时都可点；不依赖 working/busy，点了就强制拉回权威局面。
-        h('button', { className: 'bg-btn secondary bg-online-resync', type: 'button', 'aria-busy': String(resyncing),
-          title: t('online.resync.title'), 'aria-label': t('online.resync.title'), disabled: resyncing,
-          onclick: () => { forceResync().catch(() => { notice = t('online.resync.failed'); render() }) } },
-        resyncing ? t('online.resync.pending') : t('online.resync.label')),
-        h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = true; state.settingsTab = 'online'; render() } }, t('online.settingsButton')),
-        h('button', { className: 'bg-btn danger', disabled: working, onclick: () => run(leave) }, me?.host ? t('online.dissolveRoom') : t('online.leaveRoom'))),
-      online.error ? h('p', { role: 'alert', className: 'bg-online-notice' }, online.error) : null,
-      copied ? h('div', { role: 'status', className: 'bg-copy-toast' }, t('online.invite.copiedToast')) : null,
-      notice ? h('p', { role: 'alert', className: 'bg-online-notice' }, notice) : null)
+    const tone = !online.connected || !host?.online ? 'alert' : online.busy ? 'busy' : 'ok'
+    const collapsed = bannerCollapsed
+    const toggleLabel = collapsed ? t('online.banner.expand') : t('online.banner.collapse')
+    const toggleText = collapsed ? t('online.banner.expandShort') : t('online.banner.collapseShort')
+    // 收起时把错误/提示贴在胶囊下方：强制同步等操作可能从大厅错误 toast 发起，结果不能被折叠吞掉。
+    const flashes = collapsed ? [...new Set([online.error, notice].filter(Boolean))] : []
+    return h('section', {
+      className: 'bg-online-banner' + (collapsed ? ' is-collapsed' : ''),
+      'aria-label': t('online.banner.label'),
+      'data-collapsed': String(collapsed),
+    },
+      h('button', {
+        type: 'button', className: 'bg-online-toggle',
+        'aria-expanded': String(!collapsed),
+        ...(collapsed ? {} : { 'aria-controls': 'bg-online-banner-details' }),
+        'aria-label': toggleLabel, title: toggleLabel, onclick: toggleBanner,
+      },
+        h('span', { className: 'bg-online-head-row' },
+          h('span', { className: 'bg-online-dot is-' + tone, 'aria-hidden': 'true' }),
+          h('strong', { className: 'bg-online-name' }, room.game.name),
+          h('span', { className: 'bg-online-toggle-label' }, toggleText),
+          h('span', { className: 'bg-online-chevron', 'aria-hidden': 'true' }, collapsed ? '▾' : '▴')),
+        h('span', { className: 'bg-online-meta-row' },
+          h('span', { className: 'bg-room-code' }, t('online.room.code', { code: room.code })),
+          h('span', { role: 'status' }, t('online.banner.seat', { connection, seat: Number(me?.seat) + 1 })))),
+      collapsed ? null : h('div', { id: 'bg-online-banner-details', className: 'bg-online-details' },
+        h('div', { className: 'bg-online-actions' },
+          h('button', { className: 'bg-btn secondary bg-copy-invite', 'aria-label': t('online.copyInvite'), onclick: copyInvite }, copied ? t('online.copied') : t('online.copyInvite')),
+          // 卡住恢复入口：任何操作看起来卡死时都可点；不依赖 working/busy，点了就强制拉回权威局面。
+          h('button', { className: 'bg-btn secondary bg-online-resync', type: 'button', 'aria-busy': String(resyncing),
+            title: t('online.resync.title'), 'aria-label': t('online.resync.title'), disabled: resyncing,
+            onclick: () => { forceResync().catch(() => { notice = t('online.resync.failed'); render() }) } },
+          resyncing ? t('online.resync.pending') : t('online.resync.label')),
+          h('button', { className: 'bg-btn secondary', onclick: () => { state.settingsOpen = true; state.settingsTab = 'online'; render() } }, t('online.settingsButton')),
+          h('button', { className: 'bg-btn danger', disabled: working, onclick: () => run(leave) }, me?.host ? t('online.dissolveRoom') : t('online.leaveRoom'))),
+        online.error ? h('p', { role: 'alert', className: 'bg-online-notice' }, online.error) : null,
+        notice ? h('p', { role: 'alert', className: 'bg-online-notice' }, notice) : null),
+      flashes.length ? flashes.map(message => h('p', { role: 'alert', className: 'bg-online-flash' }, message)) : null,
+      copied ? h('div', { role: 'status', className: 'bg-copy-toast' }, t('online.invite.copiedToast')) : null)
   }
   function waitingRoom() {
     const online = state.online, room = online?.room
