@@ -24,6 +24,51 @@ const HOST = process.env.BOARDGAME_HOST || '127.0.0.1'
 const url = hallUrl(HOST, PORT)
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 
+// —— 退出：Ctrl+C 直接关服退出 ————————————————————————————————
+// Windows 批处理窗口里按 Ctrl+C 时，cmd 会对每一层批处理各问一次「终止批处理操作吗(Y/N)?」，
+// start.bat 为了切到 UTF-8 会再开一层 cmd，所以以前要按两次 y。
+// 把控制台输入切成 raw 模式后，Ctrl+C 只作为 0x03 字节交给本进程，不再是控制台信号：
+// cmd 不会被打断，也就不会问；退出由这里的 quit() 负责（关服、恢复控制台再退）。
+let hallServer = null
+let quitting = false
+
+function quit(code = 0) {
+  if (quitting) process.exit(code) // 退出中再按一次：立即退出
+  quitting = true
+  const server = hallServer
+  if (!server || !server.listening) process.exit(code) // 还在启动：直接退出
+  console.log('')
+  console.log('  正在退出桌游大厅…')
+  try { server.online?.close() } catch { /* 已经关闭 */ }
+  try { server.closeAllConnections?.() } catch { /* 已经关闭 */ }
+  server.close(() => process.exit(code))
+  // 还有残留连接时最多等 2 秒，别让窗口卡住。
+  setTimeout(() => process.exit(code), 2000)
+}
+
+function installQuitHandler() {
+  const stdin = process.stdin
+  let raw = false
+  process.on('exit', () => {
+    if (!raw) return
+    raw = false
+    try { stdin.setRawMode(false) } catch { /* 控制台已不可用 */ }
+  })
+  process.on('SIGINT', () => quit())
+  process.on('SIGTERM', () => quit())
+  // 只有真正的控制台才能切 raw 模式；管道、服务、测试里沿用信号退出。
+  if (process.platform !== 'win32' || !stdin.isTTY || typeof stdin.setRawMode !== 'function') return
+  try {
+    stdin.setRawMode(true)
+    raw = true
+    stdin.setEncoding('utf8')
+    stdin.on('data', text => { if (text.includes('\u0003')) quit() })
+    stdin.resume()
+  } catch (error) {
+    console.warn('  [console] 无法接管 Ctrl+C，改用系统默认方式退出：' + error.message)
+  }
+}
+
 if (await isHallRunning(url)) {
   console.log('  🎲 桌游大厅已在运行，正在打开: ' + url)
   openBrowser(url)
@@ -32,6 +77,7 @@ if (await isHallRunning(url)) {
 }
 
 async function startHall() {
+  installQuitHandler()
   const install = installContext()
   if (install) {
     try {
@@ -56,6 +102,7 @@ async function startHall() {
     setTimeout(() => process.exit(RESTART_EXIT_CODE), 3000).unref()
   }
   server = createServer({ mods, updates: { updater, store, onRestart: restart } })
+  hallServer = server
   // 恢复上一进程留下的对局存档（BOARDGAME_PERSIST=0 可整体关闭）。
   const restored = await server.ready
 
