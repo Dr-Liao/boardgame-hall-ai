@@ -16,23 +16,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { createRelay } from '../../relay/server.js'
-import { createServer } from '../../lib/server.js'
 import { perf } from '../../lib/perf.js'
-import { loadTestMods } from './helpers/mods.mjs'
-
-const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))
-const stop = server => new Promise(resolve => { server.stopRelay?.(); server.online?.close(); server.closeAllConnections(); server.close(resolve) })
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-async function waitFor(fn, timeout = 8000) {
-  const end = Date.now() + timeout
-  while (Date.now() < end) { const value = await fn(); if (value) return value; await sleep(20) }
-  throw new Error('等待状态同步超时')
-}
+import { createOnlineFixture, waitFor } from './helpers/online.mjs'
 
 // perf 记录默认关闭且会写文件；测试里打开内存记录并关掉落盘（同 online-busy.test.mjs）。
 function enablePerf(t) {
@@ -48,45 +33,13 @@ function enablePerf(t) {
 }
 
 async function fixture(t, { count = 2, env = null, persistHost = true } = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-coalesce-'))
-  const previousHome = process.env.DSH_HOME
-  process.env.DSH_HOME = home
-  const previousEnv = {}
-  for (const key of Object.keys(env || {})) {
-    previousEnv[key] = process.env[key]
-    process.env[key] = env[key]
-  }
-  const mods = await loadTestMods()
-  const relay = createRelay({ secret: 'coalesce-test-secret' })
-  const relayUrl = await listen(relay)
-  const halls = []
-  for (let i = 0; i < count; i++) {
-    const server = createServer({ mods, persist: persistHost && i === 0 })
-    await server.ready
-    const origin = await listen(server)
-    const call = async (route, body) => {
-      const res = await fetch(origin + '/api/online/' + route, {
-        method: body === undefined ? 'GET' : 'POST',
-        headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(20000),
-      })
-      return res.json()
-    }
-    halls.push({ server, origin, call, command: (action, body = {}) => call('command', { action, body: { operationId: randomUUID(), ...body } }) })
-  }
-  t.after(async () => {
-    for (const [key, value] of Object.entries(previousEnv)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-    await Promise.all(halls.map(hall => stop(hall.server)))
-    await stop(relay)
-    if (previousHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = previousHome
-    fs.rmSync(home, { recursive: true, force: true })
+  return createOnlineFixture(t, {
+    count,
+    env,
+    homePrefix: 'hall-coalesce-',
+    relayOptions: { secret: 'coalesce-test-secret' },
+    persistHost,
   })
-  return { halls, relay, relayUrl }
 }
 
 // 建房 → 其余大厅按席位 index 加入 → 准备 → 房主开局，等所有大厅拿到同一 revision。
@@ -128,6 +81,11 @@ function publishRecords(records) {
   return records.filter(entry => entry.event === 'publishOnline')
 }
 
+const waitForRecords = (from, predicate, label) => waitFor(() => {
+  const records = perf.recordsSince(from).records
+  return predicate(records) ? records : null
+}, 8000, label)
+
 test('一次行动只 flush 一次最终快照 + 一次 busy status，客人最终状态与房主一致', async t => {
   enablePerf(t)
   const { halls, relayUrl } = await fixture(t)
@@ -141,8 +99,10 @@ test('一次行动只 flush 一次最终快照 + 一次 busy status，客人最�
   // 等客人收到最终快照，并让可能残留的兜底 setImmediate 跑完后再读 perf 记录。
   const hostView = (await host.call('status')).session
   await waitFor(async () => (await guest.call('status')).session?.state?.revision === hostView.state.revision)
-  await sleep(100)
-  const records = perf.recordsSince(from).records
+  const records = await waitForRecords(from,
+    entries => entries.some(entry => entry.event === 'onlineCommand')
+      && entries.some(entry => entry.event === 'publish.member'),
+    '合并发布记录')
   const publishes = publishRecords(records)
 
   // P2.1 后：busy status + 行动者同步发布 + 其他席位后台发布，最多 3 次 publishOnline。
@@ -174,8 +134,12 @@ test('BOARDGAME_ONLINE_COALESCE=0 回滚：每个 snapshotSession 都立即 publ
   assert.equal(result.ok, true, result.error)
   const hostView = (await host.call('status')).session
   await waitFor(async () => (await guest.call('status')).session?.state?.revision === hostView.state.revision)
-  await sleep(100)
-  const publishes = publishRecords(perf.recordsSince(from).records)
+  const rollbackRecords = await waitForRecords(from, entries => {
+    const publishes = publishRecords(entries)
+    return publishes.length >= 3
+      && publishes.some(entry => entry.published === 0 && !entry.statusSent && entry.skipped > 0)
+  }, '关闭合并后的发布记录')
+  const publishes = publishRecords(rollbackRecords)
 
   // 回滚后：提交后的 snapshotSession、命令末尾的 snapshotSession、finally 各进一次发布路径。
   assert.ok(publishes.length >= 3, `关闭合并后每次 snapshotSession 都应 publishOnline（实际 ${publishes.length} 次）`)
@@ -215,7 +179,7 @@ test('房间广播 / 加入 / 退出 / 同步仍立即发布：等待房间的�
   assert.equal(lobby.revision, hostLobby.revision)
   assert.equal(lobby.modName, hostLobby.modName)
   assert.equal((await guest.call('status')).session, null, '等待房间不应凭空出现对局会话')
-  await sleep(100)
+  await waitForRecords(from, entries => publishRecords(entries).length >= 1, '加入广播')
   assert.ok(publishRecords(perf.recordsSince(from).records).length >= 1,
     '加入触发的房间广播 / sync 必须立即 publishOnline，而不是等下一次命令')
 
@@ -223,7 +187,7 @@ test('房间广播 / 加入 / 退出 / 同步仍立即发布：等待房间的�
   from = perf.count()
   await guest.call('ready', { ready: true })
   await waitFor(async () => (await host.call('status')).room?.members.some(member => !member.host && member.ready))
-  await sleep(100)
+  await waitForRecords(from, entries => publishRecords(entries).length >= 1, '准备广播')
   assert.ok(publishRecords(perf.recordsSince(from).records).length >= 1,
     '准备变化触发的房间广播必须立即 publishOnline')
 
@@ -231,7 +195,7 @@ test('房间广播 / 加入 / 退出 / 同步仍立即发布：等待房间的�
   from = perf.count()
   guest.server.online.close()
   await waitFor(async () => (await host.call('status')).room?.members.some(member => !member.host && member.online === false))
-  await sleep(100)
+  await waitForRecords(from, entries => publishRecords(entries).length >= 1, '断线广播')
   assert.ok(publishRecords(perf.recordsSince(from).records).length >= 1,
     '退出/断线触发的房间广播必须立即 publishOnline')
 })
@@ -250,8 +214,11 @@ test('AI 连续动作合并进最终快照：事件不丢、seq 连续、发布�
   const first = await host.command('move', { revision: initial.state.revision, move: { x: 0, y: 0 } })
   assert.equal(first.ok, true, first.error)
   await waitFor(async () => (await guest.call('status')).session?.state?.revision === (await host.call('status')).session.state.revision)
-  await sleep(100)
-  const noAiPublishes = publishRecords(perf.recordsSince(from).records).length
+  const noAiRecords = await waitForRecords(from,
+    entries => entries.some(entry => entry.event === 'onlineCommand')
+      && entries.some(entry => entry.event === 'publish.member'),
+    '无 AI 行动发布')
+  const noAiPublishes = publishRecords(noAiRecords).length
 
   // 第二段：客人行动后，AI 席位 2、3 连续行动，两段行动必须都随最终快照一次到达。
   const guestView = (await guest.call('status')).session
@@ -261,8 +228,10 @@ test('AI 连续动作合并进最终快照：事件不丢、seq 连续、发布�
   assert.equal(second.ok, true, second.error)
   const hostAfter = (await host.call('status')).session
   await waitFor(async () => (await guest.call('status')).session?.state?.revision === hostAfter.state.revision)
-  await sleep(100)
-  const records = perf.recordsSince(from).records
+  const records = await waitForRecords(from,
+    entries => entries.some(entry => entry.event === 'onlineCommand')
+      && entries.some(entry => entry.event === 'publish.member'),
+    'AI 连续行动发布')
   const aiPublishes = publishRecords(records).length
   const guestAfter = (await guest.call('status')).session
 
@@ -292,9 +261,11 @@ test('1 人类 + 1 AI 的两人房：host 一次行动后 AI 动作随最终快�
   const from = perf.count()
   const result = await host.command('move', { revision: initial.state.revision, move: { x: 0, y: 0 } })
   assert.equal(result.ok, true, result.error)
-  await sleep(100)
+  const records = await waitForRecords(from,
+    entries => entries.some(entry => entry.event === 'onlineCommand')
+      && publishRecords(entries).some(entry => entry.published > 0),
+    '单人房 AI 发布')
   const view = (await host.call('status')).session
-  const records = perf.recordsSince(from).records
   const publishes = publishRecords(records)
 
   // 房主行动后 AI 座位 1 自动走一步：两步 move 事件都在最终快照里，seq 连续。

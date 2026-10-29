@@ -7,23 +7,8 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { createRelay } from '../../relay/server.js'
-import { createServer } from '../../lib/server.js'
 import { perf } from '../../lib/perf.js'
-import { loadTestMods } from './helpers/mods.mjs'
-
-const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))
-const stop = server => new Promise(resolve => { server.stopRelay?.(); server.online?.close(); server.closeAllConnections(); server.close(resolve) })
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-async function waitFor(fn, timeout = 8000) {
-  const end = Date.now() + timeout
-  while (Date.now() < end) { const value = await fn(); if (value) return value; await sleep(20) }
-  throw new Error('等待状态同步超时')
-}
+import { createOnlineFixture, waitFor } from './helpers/online.mjs'
 
 function enablePerf(t) {
   const previousFile = process.env.BOARDGAME_PERF_FILE
@@ -38,47 +23,12 @@ function enablePerf(t) {
 }
 
 async function fixture(t, { count = 3, env = null } = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-defer-'))
-  const previousHome = process.env.DSH_HOME
-  process.env.DSH_HOME = home
-  const previousEnv = {}
-  for (const key of Object.keys(env || {})) {
-    previousEnv[key] = process.env[key]
-    process.env[key] = env[key]
-  }
-  t.after(() => {
-    for (const [key, value] of Object.entries(previousEnv)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-    if (previousHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = previousHome
-    fs.rmSync(home, { recursive: true, force: true })
+  return createOnlineFixture(t, {
+    count,
+    env,
+    homePrefix: 'hall-defer-',
+    relayOptions: { secret: 'defer-test-secret' },
   })
-  const mods = await loadTestMods()
-  const relay = createRelay({ secret: 'defer-test-secret' })
-  const relayUrl = await listen(relay)
-  const halls = []
-  for (let i = 0; i < count; i++) {
-    const server = createServer({ mods, persist: false })
-    await server.ready
-    const origin = await listen(server)
-    const call = async (route, body) => {
-      const res = await fetch(origin + '/api/online/' + route, {
-        method: body === undefined ? 'GET' : 'POST',
-        headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(20000),
-      })
-      return res.json()
-    }
-    halls.push({ server, origin, call, command: (action, body = {}) => call('command', { action, body: { operationId: randomUUID(), ...body } }) })
-  }
-  t.after(async () => {
-    await Promise.all(halls.map(hall => stop(hall.server)))
-    await stop(relay)
-  })
-  return { halls, relayUrl }
 }
 
 async function startRoom(halls, relayUrl) {
@@ -109,6 +59,10 @@ async function nextAction(halls) {
 }
 
 const publishesOf = records => records.filter(entry => entry.event === 'publishOnline')
+const waitForRecords = (from, predicate, label) => waitFor(() => {
+  const records = perf.recordsSince(from).records
+  return predicate(records) ? records : null
+}, 8000, label)
 
 test('BOARDGAME_ONLINE_DEFER=1：会话发布整体延后到命令响应之后，后台一次补齐', async t => {
   enablePerf(t)
@@ -132,8 +86,11 @@ test('BOARDGAME_ONLINE_DEFER=1：会话发布整体延后到命令响应之后�
   const hostView = (await host.call('status')).session
   await waitFor(async () => (await Promise.all([guest1.call('status'), guest2.call('status')]))
     .every(status => status.session?.state?.revision === hostView.state.revision))
-  await sleep(80)
-  const records = perf.recordsSince(from).records
+  const records = await waitForRecords(from, entries => {
+    const background = publishesOf(entries).find(entry => entry.mode === 'background')
+    return background && entries.some(entry => entry.event === 'onlineCommand')
+      && entries.filter(entry => entry.event === 'publish.member').length === 2
+  }, '后台补齐发布')
   const background = publishesOf(records).find(entry => entry.mode === 'background')
   assert.ok(background, '应存在一次后台补齐发布')
   // 命令响应在 onlineCommandInner 返回时发出；onlineCommand 的 perf 记录在同一个微任务里生成，
@@ -172,9 +129,11 @@ test('BOARDGAME_ONLINE_DEFER=0 回滚：命令末尾一次性同步发布所有�
   const hostView = (await host.call('status')).session
   await waitFor(async () => (await Promise.all(halls.map(hall => hall.call('status'))))
     .every(status => status.session?.state?.revision === hostView.state.revision))
-  await sleep(80)
 
-  const publishes = publishesOf(perf.recordsSince(from).records)
+  const records = await waitForRecords(from,
+    entries => publishesOf(entries).some(entry => entry.mode === 'flush' && entry.published >= 2),
+    '同步 flush 发布')
+  const publishes = publishesOf(records)
   assert.equal(publishes.some(entry => entry.mode === 'actor'), false, '默认关闭时不应出现行动者单独发布')
   assert.equal(publishes.some(entry => entry.mode === 'background'), false, '默认关闭时不应出现后台补齐')
   const fullFlush = publishes.find(entry => entry.mode === 'flush')

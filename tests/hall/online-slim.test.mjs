@@ -10,53 +10,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { createRelay } from '../../relay/server.js'
-import { createServer } from '../../lib/server.js'
-import { loadTestMods } from './helpers/mods.mjs'
+import { createOnlineFixture, waitFor as waitForOnline } from './helpers/online.mjs'
 
-const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))
-const stop = server => new Promise(resolve => { server.stopRelay?.(); server.online?.close(); server.closeAllConnections(); server.close(resolve) })
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-async function waitFor(fn, timeout = 6000) {
-  const end = Date.now() + timeout
-  while (Date.now() < end) { const value = await fn(); if (value) return value; await sleep(20) }
-  throw new Error('等待状态同步超时')
-}
+const waitFor = (check, timeout = 6000) => waitForOnline(check, timeout)
 
 async function fixture(t, count = 2) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-slim-'))
-  const previousHome = process.env.DSH_HOME
-  process.env.DSH_HOME = home
-  const mods = await loadTestMods()
-  const relay = createRelay({ secret: 'slim-test-secret' })
-  const relayUrl = await listen(relay)
-  const halls = []
-  for (let i = 0; i < count; i++) {
-    const server = createServer({ mods, persist: i === 0 })
-    await server.ready
-    const origin = await listen(server)
-    const call = async (route, body) => {
-      const res = await fetch(origin + '/api/online/' + route, {
-        method: body === undefined ? 'GET' : 'POST',
-        headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(20000),
-      })
-      return res.json()
-    }
-    halls.push({ server, origin, call, command: (action, body = {}) => call('command', { action, body: { operationId: randomUUID(), ...body } }) })
-  }
-  t.after(async () => {
-    await Promise.all(halls.map(hall => stop(hall.server)))
-    await stop(relay)
-    if (previousHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = previousHome
-    fs.rmSync(home, { recursive: true, force: true })
+  return createOnlineFixture(t, {
+    count,
+    homePrefix: 'hall-slim-',
+    relayOptions: { secret: 'slim-test-secret' },
+    persistHost: true,
   })
-  return { halls, relay, relayUrl }
 }
 
 async function startRoom(halls, relayUrl) {

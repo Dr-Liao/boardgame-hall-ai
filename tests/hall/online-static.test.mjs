@@ -12,68 +12,19 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { createRelay } from '../../relay/server.js'
-import { createServer } from '../../lib/server.js'
-import { loadTestMods } from './helpers/mods.mjs'
+import { createOnlineFixture, waitFor } from './helpers/online.mjs'
 
-const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))
-const stop = server => new Promise(resolve => { server.stopRelay?.(); server.online?.close(); server.closeAllConnections(); server.close(resolve) })
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-async function waitFor(fn, timeout = 8000) {
-  const end = Date.now() + timeout
-  while (Date.now() < end) { const value = await fn(); if (value) return value; await sleep(20) }
-  throw new Error('等待状态同步超时')
-}
 
 async function fixture(t, { count = 2, env = null } = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-static-'))
-  const previousHome = process.env.DSH_HOME
-  process.env.DSH_HOME = home
-  const previousEnv = {}
-  for (const key of Object.keys(env || {})) {
-    previousEnv[key] = process.env[key]
-    process.env[key] = env[key]
-  }
-  t.after(() => {
-    for (const [key, value] of Object.entries(previousEnv)) {
-      if (value === undefined) delete process.env[key]
-      else process.env[key] = value
-    }
-    if (previousHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = previousHome
-    fs.rmSync(home, { recursive: true, force: true })
+  return createOnlineFixture(t, {
+    count,
+    env,
+    homePrefix: 'hall-static-',
+    relayOptions: { secret: 'static-test-secret' },
+    persistHost: true,
+    details: true,
   })
-  const mods = await loadTestMods()
-  const relay = createRelay({ secret: 'static-test-secret' })
-  const relayUrl = await listen(relay)
-  const halls = []
-  for (let i = 0; i < count; i++) {
-    const server = createServer({ mods, persist: i === 0 })
-    await server.ready
-    const origin = await listen(server)
-    const call = async (route, body) => {
-      const url = origin + '/api/online/' + route
-      const res = await fetch(url, {
-        method: body === undefined ? 'GET' : 'POST',
-        headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(20000),
-      })
-      const text = await res.text()
-      return { json: JSON.parse(text), bytes: Buffer.byteLength(text), res }
-    }
-    const command = (action, body = {}) => call('command', { action, body: { operationId: randomUUID(), ...body } })
-    halls.push({ server, origin, call, command })
-  }
-  t.after(async () => {
-    await Promise.all(halls.map(hall => stop(hall.server)))
-    await stop(relay)
-  })
-  return { halls, relay, relayUrl }
 }
 
 async function startRoom(halls, relayUrl) {

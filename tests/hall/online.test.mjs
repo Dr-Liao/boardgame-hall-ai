@@ -9,41 +9,25 @@ import { createRelay } from '../../relay/server.js'
 import { createServer } from '../../lib/server.js'
 import { gameVersions, relayAddress } from '../../lib/online.js'
 import { snapshotPath } from '../../lib/sessions.js'
-import { loadTestMods } from './helpers/mods.mjs'
+import {
+  createOnlineFixture,
+  listen,
+  stop,
+  waitFor as waitForOnline,
+} from './helpers/online.mjs'
 
 // 多人、私有信息、同时行动、批量确认与存档兼容统一用测试专用 Mod（tests/fixtures/mods/fixture-cards）验证；
 // 具体游戏在联机层上的集成回归放在各自仓库（如 games/arkhamhorror/tests/hall-online.test.mjs）。
 const CARDS = 'fixture-cards'
-const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))
-const stop = server => new Promise(resolve => { server.stopRelay?.(); server.online?.close(); server.closeAllConnections(); server.close(resolve) })
-async function waitFor(fn, timeout = 6000) {
-  const end = Date.now() + timeout
-  while (Date.now() < end) { const value = await fn(); if (value) return value; await new Promise(r => setTimeout(r, 30)) }
-  throw new Error('等待状态同步超时')
-}
+const waitFor = (check, timeout = 6000) => waitForOnline(check, timeout)
+
 async function fixture(t, count = 2, persistHost = false) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-online-'))
-  const previous = process.env.DSH_HOME
-  process.env.DSH_HOME = home
-  const mods = await loadTestMods()
-  const relay = createRelay({ secret: 'integration-test-secret' }), relayUrl = await listen(relay)
-  const halls = []
-  for (let i = 0; i < count; i++) {
-    const server = createServer({ mods, persist: persistHost && halls.length === 0 }); await server.ready
-    const origin = await listen(server)
-    const call = async (route, body) => {
-      const res = await fetch(origin + '/api/online/' + route, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(20000) })
-      return res.json()
-    }
-    const command = (action, body = {}) => call('command', { action, body: { operationId: randomUUID(), ...body } })
-    halls.push({ server, origin, call, command })
-  }
-  t.after(async () => {
-    await Promise.all(halls.map(h => stop(h.server))); await stop(relay)
-    if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous
-    fs.rmSync(home, { recursive: true, force: true })
+  return createOnlineFixture(t, {
+    count,
+    homePrefix: 'hall-online-',
+    relayOptions: { secret: 'integration-test-secret' },
+    persistHost,
   })
-  return { halls, relay, relayUrl, mods }
 }
 
 test('relay address accepts Render HTTPS and loopback development, rejects credentials and insecure remote hosts', () => {

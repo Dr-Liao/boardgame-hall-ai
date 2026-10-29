@@ -11,23 +11,14 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
-import { createRelay } from '../../relay/server.js'
-import { createServer } from '../../lib/server.js'
 import { perf } from '../../lib/perf.js'
-import { loadTestMods } from './helpers/mods.mjs'
+import { createOnlineFixture, waitFor as waitForOnline } from './helpers/online.mjs'
 
-const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(`http://127.0.0.1:${server.address().port}`)))
-const stop = server => new Promise(resolve => { server.stopRelay?.(); server.online?.close(); server.closeAllConnections(); server.close(resolve) })
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-async function waitFor(fn, timeout = 6000) {
-  const end = Date.now() + timeout
-  while (Date.now() < end) { const value = await fn(); if (value) return value; await sleep(20) }
-  throw new Error('等待状态同步超时')
-}
+const waitFor = (check, timeout = 6000, label) => waitForOnline(check, timeout, label)
+const waitForRecords = (from, predicate, label) => waitFor(() => {
+  const records = perf.recordsSince(from).records
+  return predicate(records) ? records : null
+}, 6000, label)
 
 function enablePerf(t) {
   const previousFile = process.env.BOARDGAME_PERF_FILE
@@ -42,36 +33,12 @@ function enablePerf(t) {
 }
 
 async function fixture(t, count = 2) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-busy-'))
-  const previousHome = process.env.DSH_HOME
-  process.env.DSH_HOME = home
-  const mods = await loadTestMods()
-  const relay = createRelay({ secret: 'busy-test-secret' })
-  const relayUrl = await listen(relay)
-  const halls = []
-  for (let i = 0; i < count; i++) {
-    const server = createServer({ mods, persist: i === 0 })
-    await server.ready
-    const origin = await listen(server)
-    const call = async (route, body) => {
-      const res = await fetch(origin + '/api/online/' + route, {
-        method: body === undefined ? 'GET' : 'POST',
-        headers: { 'x-boardgame-online': '1', 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(20000),
-      })
-      return res.json()
-    }
-    halls.push({ server, origin, call, command: (action, body = {}) => call('command', { action, body: { operationId: randomUUID(), ...body } }) })
-  }
-  t.after(async () => {
-    await Promise.all(halls.map(hall => stop(hall.server)))
-    await stop(relay)
-    if (previousHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = previousHome
-    fs.rmSync(home, { recursive: true, force: true })
+  return createOnlineFixture(t, {
+    count,
+    homePrefix: 'hall-busy-',
+    relayOptions: { secret: 'busy-test-secret' },
+    persistHost: true,
   })
-  return { halls, relay, relayUrl }
 }
 
 async function startRoom(halls, relayUrl) {
@@ -110,8 +77,11 @@ test('busy 变化走轻量 status：只同步运行状态，不重发会话，�
   const from = perf.count()
   const first = await action.hall.command('move', { revision: action.revision, move: action.move })
   assert.equal(first.ok, true, first.error)
-  await sleep(50)
-  const records = perf.recordsSince(from).records
+  const records = await waitForRecords(from, entries => {
+    const publishes = entries.filter(entry => entry.event === 'publishOnline')
+    return publishes.length >= 2 && publishes.some(entry => entry.busy === false
+      && (entry.published > 0 || entry.statusSent > 0))
+  }, 'busy 发布记录')
 
   const publishes = records.filter(entry => entry.event === 'publishOnline')
   assert.ok(publishes.length >= 2, `一次行动应至少两次 publishOnline，实际 ${publishes.length}`)
@@ -134,8 +104,10 @@ test('busy 变化走轻量 status：只同步运行状态，不重发会话，�
   const fromSecond = perf.count()
   const result = await second.hall.command('move', { revision: second.revision, move: second.move })
   assert.equal(result.ok, true, result.error)
-  await sleep(50)
-  const secondRecords = perf.recordsSince(fromSecond).records
+  const secondRecords = await waitForRecords(fromSecond,
+    entries => entries.some(entry => entry.event === 'publish.member'
+      && (entry.kind === 'delta' || entry.kind === 'full')),
+    '第二次会话发布')
   assert.ok(secondRecords.some(entry => entry.event === 'publish.member' && (entry.kind === 'delta' || entry.kind === 'full')),
     '第二次行动仍需实际下发一次会话/增量')
   const hostAfter = (await host.call('status')).session
@@ -160,8 +132,9 @@ test('BOARDGAME_ONLINE_BUSY=0 回滚：busy 变化仍发整份会话', async t =
   const from = perf.count()
   const result = await action.hall.command('move', { revision: action.revision, move: action.move })
   assert.equal(result.ok, true, result.error)
-  await sleep(50)
-  const records = perf.recordsSince(from).records
+  const records = await waitForRecords(from,
+    entries => entries.some(entry => entry.event === 'publishOnline' && entry.published > 0),
+    '回滚发布记录')
   assert.equal(records.some(entry => entry.event === 'publish.status'), false, '关闭开关后不应出现 status 消息')
   assert.equal(records.some(entry => entry.event === 'publishOnline' && entry.statusSent > 0), false)
   assert.ok(records.some(entry => entry.event === 'publishOnline' && entry.published > 0),
