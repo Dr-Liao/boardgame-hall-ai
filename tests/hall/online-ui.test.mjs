@@ -298,6 +298,11 @@ test('悬浮联机栏默认收起、可展开，收起时保留房间/连接状�
   const toggle = byClass(collapsed, 'bg-online-toggle')[0]
   assert.equal(toggle.props['aria-expanded'], 'false')
   assert.equal(toggle.props['aria-label'], '展开联机房间栏')
+  assert.match(toggle.props.title, /按住可拖动，避免挡住牌桌/)
+  const drag = byClass(collapsed, 'bg-online-drag')[0]
+  assert.equal(drag.props.type, 'button')
+  assert.equal(drag.props['aria-label'], '拖动联机栏')
+  assert.match(drag.props.title, /双击或 Home 回到原位/)
   // 点击后只刷新悬浮栏（不整页重绘），展开出操作区并写入持久化选择。
   toggle.props.onclick()
   assert.equal(chromeRenders, 1)
@@ -315,4 +320,72 @@ test('悬浮联机栏默认收起、可展开，收起时保留房间/连接状�
   assert.equal(byClass(collapsedWithError, 'bg-online-flash').length, 1)
   assert.match(collapsedText(collapsedWithError), /联机连接暂不可用/)
   assert.equal(stored.get('boardgame-hall.online-banner-collapsed'), '1')
+})
+
+test('展开联机栏列出每位玩家的延迟和掉线，收起时不渲染这张名单', async t => {
+  const oldStorage = globalThis.localStorage, oldWindow = globalThis.window
+  const stored = new Map()
+  globalThis.localStorage = { getItem: key => stored.get(key) ?? '', setItem: (key, value) => stored.set(key, value) }
+  globalThis.window = { addEventListener() {} }
+  t.after(() => {
+    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow
+  })
+  const h = (tag, props, ...children) => ({
+    tag, props: props || {}, children: children.flat(Infinity).filter(child => child != null && child !== false),
+  })
+  const collect = (node, predicate, out = []) => {
+    if (!node || typeof node === 'string') return out
+    if (predicate(node)) out.push(node)
+    for (const child of node.children || []) collect(child, predicate, out)
+    return out
+  }
+  const byClass = (node, name) => collect(node, item => String(item.props?.className || '').split(/\s+/).includes(name))
+  const text = node => (typeof node === 'string' ? node : (node.children || []).map(text).join(' '))
+  const state = {
+    busy: false, chat: {}, catalog: [],
+    online: {
+      connected: true, busy: false, memberId: 'm-host', relayUrl: '',
+      room: {
+        code: 'F789C780D5', game: { name: '诡镇奇谈：卡牌版' },
+        aiSeats: [{ seat: 1, name: '罗兰' }],
+        members: [
+          { id: 'm-host', name: '馆长', host: true, seat: 0, online: true, ready: true, ping: 18 },
+          { id: 'm-guest', name: '星', host: false, seat: 2, online: false, ready: false, ping: 80 },
+          { id: 'm-wait', name: '未测', host: false, seat: 3, online: true, ready: true },
+        ],
+      },
+    },
+  }
+  const ui = createOnlineUI({
+    h, state, render() {}, renderChrome() {}, loadGame() {},
+    request: async () => ({ ok: true }),
+  })
+  assert.equal(byClass(ui.banner(), 'bg-online-roster').length, 0, '收起时不渲染玩家延迟名单')
+  byClass(ui.banner(), 'bg-online-toggle')[0].props.onclick()
+  const expanded = ui.banner()
+  const roster = byClass(expanded, 'bg-online-roster')[0]
+  assert.equal(roster.props['aria-label'], '玩家连接')
+  const players = byClass(expanded, 'bg-online-player')
+  assert.deepEqual(players.map(item => item.props.className), [
+    'bg-online-player is-me',
+    'bg-online-player is-ai',
+    'bg-online-player is-offline',
+    'bg-online-player',
+  ])
+  assert.match(text(players[0]), /席位 1/)
+  assert.match(text(players[0]), /馆长/)
+  assert.match(text(players[0]), /房主/)
+  assert.match(text(players[0]), /你/)
+  assert.match(text(players[0]), /18 ms/)
+  assert.equal(byClass(players[0], 'bg-online-player-ping')[0].props.title, '到中转服务的往返延迟')
+  assert.match(text(players[1]), /席位 2/)
+  assert.match(text(players[1]), /罗兰/)
+  assert.match(text(players[1]), /AI/)
+  assert.match(text(players[2]), /星/)
+  assert.match(text(players[2]), /已断线/)
+  assert.doesNotMatch(text(players[2]), /80 ms/)
+  assert.match(text(players[3]), /未测/)
+  assert.match(text(players[3]), /—/)
+  assert.equal(byClass(players[3], 'bg-online-player-ping')[0].props.title, '延迟尚未测到')
 })

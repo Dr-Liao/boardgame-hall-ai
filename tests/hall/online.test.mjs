@@ -339,6 +339,50 @@ test('relay rejects incompatible games and guest control messages; snapshots sta
   assert.equal((await guest.rpc({ type: 'signal', target: created.data.memberId, data: { ...signal, description: { sdp: 'x'.repeat(66000) } } })).ok, false)
 })
 
+test('relay reports each player ping without a room refresh, and a dropped socket is offline', async t => {
+  const relay = createRelay(), url = await listen(relay), clients = []
+  t.after(async () => { for (const client of clients) client.socket.close(); await stop(relay) })
+  async function client() {
+    const socket = new WebSocket(url.replace('http:', 'ws:') + '/ws'), messages = [], pending = new Map()
+    socket.addEventListener('message', event => {
+      const data = JSON.parse(event.data); messages.push(data)
+      if (data.type === 'result') { pending.get(data.id)?.(data); pending.delete(data.id) }
+    })
+    await new Promise(resolve => socket.addEventListener('open', resolve, { once: true }))
+    const rpc = data => new Promise(resolve => { const id = randomUUID(); pending.set(id, resolve); socket.send(JSON.stringify({ ...data, id })) })
+    const value = { socket, messages, rpc }; clients.push(value); return value
+  }
+  const host = await client(), guest = await client()
+  const created = await host.rpc({ type: 'create', name: '房主', capacity: 2, hallVersion: '0.1.2', game: { id: 'ox', name: '井字棋', version: '1.0.0' } })
+  assert.equal(created.ok, true, created.error)
+  const joined = await guest.rpc({ type: 'join', code: created.data.room.code, name: '客人', hallVersion: '0.1.2', versions: { ox: '1.0.0' } })
+  assert.equal(joined.ok, true, joined.error)
+  const roomsBeforePing = host.messages.filter(message => message.type === 'room').length
+  await waitFor(() => host.messages.some(message => message.type === 'presence'
+    && message.members.length === 2 && message.members.every(member => Number.isInteger(member.ping) && member.ping >= 0 && member.ping <= 9999)))
+  assert.equal(host.messages.filter(message => message.type === 'room').length, roomsBeforePing, '延迟更新不能走 room 广播')
+  guest.socket.close()
+  await waitFor(() => host.messages.some(message => message.type === 'room' && message.room.members.some(member => member.online === false && member.ping === null)))
+})
+
+test('hall status shows every member ping without republishing the match', async t => {
+  const { halls: [host, guest], relayUrl } = await fixture(t, 2)
+  const created = await host.call('create', { relayUrl, modId: 'ox', capacity: 2, fillAi: false })
+  assert.equal(created.ok, true, created.error)
+  assert.equal((await guest.call('join', { relayUrl, code: created.room.code })).ok, true)
+  assert.equal((await guest.call('ready', { ready: true })).ok, true)
+  const started = await host.command('start')
+  assert.equal(started.ok, true, started.error)
+  const revision = started.session.state.revision
+  await waitFor(async () => {
+    const status = await host.call('status')
+    return status.room.members.length === 2 && status.room.members.every(member => Number.isInteger(member.ping))
+  })
+  const after = await host.call('status')
+  assert.equal(after.session.state.revision, revision)
+  assert.ok(after.room.members.every(member => member.ping >= 0 && member.ping <= 9999))
+})
+
 test('empty slots can be AI and host executes AI turns once', async t => {
   const { halls: [host], relayUrl } = await fixture(t, 1)
   await host.call('create', { relayUrl, modId: 'ox', capacity: 2, fillAi: true, settings: { firstMove: 'ai' } })

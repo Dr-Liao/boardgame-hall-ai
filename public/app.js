@@ -477,27 +477,194 @@ document.addEventListener('compositionend', () => {
   compositionRelease = null
 })
 
+const BANNER_POS_KEY = 'boardgame-hall.online-banner-pos'
+const BANNER_MARGIN = 8
+let bannerPos = readBannerPos()
+let bannerDrag = null
+let suppressBannerClick = false
+
+function readBannerPos() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(BANNER_POS_KEY) || 'null')
+    if (raw && Number.isFinite(raw.x) && Number.isFinite(raw.y)) return { x: raw.x, y: raw.y }
+  } catch { /* 坏数据或无 localStorage：回到默认右上角 */ }
+  return null
+}
+
+function writeBannerPos(pos) {
+  bannerPos = pos ? { x: Math.round(pos.x), y: Math.round(pos.y) } : null
+  try {
+    if (!bannerPos) localStorage.removeItem(BANNER_POS_KEY)
+    else localStorage.setItem(BANNER_POS_KEY, JSON.stringify(bannerPos))
+  } catch { /* 隐私模式写不进去时，这次会话里的位置仍然有效 */ }
+}
+
+function bannerBoxParent(banner) {
+  return banner.offsetParent || banner.parentElement
+}
+
+function clampBannerPoint(banner, x, y) {
+  const parent = bannerBoxParent(banner)
+  const width = parent?.clientWidth || window.innerWidth
+  const height = parent?.clientHeight || window.innerHeight
+  const maxX = Math.max(BANNER_MARGIN, width - banner.offsetWidth - BANNER_MARGIN)
+  const maxY = Math.max(BANNER_MARGIN, height - banner.offsetHeight - BANNER_MARGIN)
+  return {
+    x: Math.min(maxX, Math.max(BANNER_MARGIN, x)),
+    y: Math.min(maxY, Math.max(BANNER_MARGIN, y)),
+  }
+}
+
+function bannerVisualOrigin(banner) {
+  const parent = bannerBoxParent(banner)
+  const parentRect = parent.getBoundingClientRect()
+  const rect = banner.getBoundingClientRect()
+  return { x: rect.left - parentRect.left, y: rect.top - parentRect.top }
+}
+
 function refreshOnlineBanner() {
   const oldBanner = root.querySelector('.bg-console > .bg-online-banner')
   const hadFocus = !!oldBanner && oldBanner.contains(document.activeElement)
+  const focusSelector = document.activeElement?.classList?.contains('bg-online-drag') ? '.bg-online-drag' : '.bg-online-toggle'
   const nextBanner = onlineUi.banner()
   if (oldBanner && nextBanner) oldBanner.replaceWith(nextBanner)
   else if (oldBanner) oldBanner.remove()
   else if (nextBanner) root.querySelector('.bg-console')?.prepend(nextBanner)
   placeOnlineBanner()
-  // 展开/收起会替换整块悬浮栏：把焦点还给新的切换按钮，键盘/读屏用户不会掉回页面开头。
-  if (hadFocus && nextBanner) nextBanner.querySelector('.bg-online-toggle')?.focus({ preventScroll: true })
+  // 展开/收起会替换整块悬浮栏：把焦点还给把手或切换按钮，键盘/读屏用户不会掉回页面开头。
+  // 拖动过程中不抢焦点，避免替换节点时打断这次拖动。
+  if (hadFocus && nextBanner && !bannerDrag) nextBanner.querySelector(focusSelector)?.focus({ preventScroll: true })
 }
 
 // 悬浮联机栏贴在当前 Mod 头部下方：各 Mod 的标题栏高度不同（桌面/移动、是否换行），
 // 不用固定 top，避免收起后的胶囊盖住牌桌自己的标题和按钮；没有头部（等待房间）时贴顶。
+// 玩家拖开之后改用记下的 left/top，并夹在牌桌里面，避免滑出屏幕后还挡着一块却够不着。
 function placeOnlineBanner() {
   const banner = root.querySelector('.bg-console > .bg-online-banner')
   if (!banner) return
-  const gameHead = root.querySelector('.bg-console .bg-game-head, .bg-console .gd-head')
-  const top = gameHead ? Math.max(8, Math.round(gameHead.getBoundingClientRect().bottom + 8)) : 12
-  banner.style.setProperty('--bg-online-banner-top', top + 'px')
+  if (!bannerPos) {
+    banner.classList.remove('is-placed', 'is-dragging')
+    banner.style.left = ''
+    banner.style.top = ''
+    banner.style.right = ''
+    const gameHead = root.querySelector('.bg-console .bg-game-head, .bg-console .gd-head')
+    const top = gameHead ? Math.max(8, Math.round(gameHead.getBoundingClientRect().bottom + 8)) : 12
+    banner.style.setProperty('--bg-online-banner-top', top + 'px')
+    return
+  }
+  const pos = clampBannerPoint(banner, bannerPos.x, bannerPos.y)
+  banner.classList.add('is-placed')
+  banner.classList.toggle('is-dragging', !!bannerDrag?.moved)
+  banner.style.left = pos.x + 'px'
+  banner.style.top = pos.y + 'px'
+  banner.style.right = 'auto'
 }
+
+function bannerPointerSurface(event) {
+  if (event.button != null && event.button !== 0) return null
+  const banner = event.target?.closest?.('.bg-online-banner')
+  if (!banner || !root.contains(banner)) return null
+  // 房间码和提示文字保持可选中；操作按钮只响应点击，不跟着标题一起被拖走。
+  if (event.target.closest('.bg-room-code, .bg-online-notice, .bg-online-actions')) return null
+  const interactive = event.target.closest('button, a, input, select, textarea')
+  if (interactive && !interactive.classList.contains('bg-online-toggle') && !interactive.classList.contains('bg-online-drag')) return null
+  return banner
+}
+
+function onBannerPointerDown(event) {
+  // 上一次拖动如果没有产生 click，别让这次真正的点击被吞掉。
+  if (suppressBannerClick) suppressBannerClick = false
+  if (bannerDrag) return
+  const banner = bannerPointerSurface(event)
+  if (!banner) return
+  const origin = bannerVisualOrigin(banner)
+  bannerDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originX: origin.x,
+    originY: origin.y,
+    moved: false,
+  }
+}
+
+function onBannerPointerMove(event) {
+  if (!bannerDrag || event.pointerId !== bannerDrag.pointerId) return
+  const dx = event.clientX - bannerDrag.startX
+  const dy = event.clientY - bannerDrag.startY
+  if (!bannerDrag.moved && Math.hypot(dx, dy) < 6) return
+  bannerDrag.moved = true
+  const banner = root.querySelector('.bg-console > .bg-online-banner')
+  if (!banner) return
+  event.preventDefault()
+  const next = clampBannerPoint(banner, bannerDrag.originX + dx, bannerDrag.originY + dy)
+  bannerPos = next
+  banner.classList.add('is-placed', 'is-dragging')
+  banner.style.left = next.x + 'px'
+  banner.style.top = next.y + 'px'
+  banner.style.right = 'auto'
+  try { banner.setPointerCapture(event.pointerId) } catch { /* 节点刚被替换时这一帧捕获会失败，下一帧再试 */ }
+  window.getSelection?.()?.removeAllRanges?.()
+}
+
+function finishBannerDrag(event) {
+  if (!bannerDrag || event.pointerId !== bannerDrag.pointerId) return
+  const moved = bannerDrag.moved
+  bannerDrag = null
+  if (!moved) return
+  writeBannerPos(bannerPos)
+  placeOnlineBanner()
+  // 松手后的那一下 click 不算展开/点按钮，也不要落到被挪开的牌桌控件上。
+  suppressBannerClick = true
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onBannerClickCapture(event) {
+  if (!suppressBannerClick) return
+  suppressBannerClick = false
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function onBannerDoubleClick(event) {
+  if (!event.target?.closest?.('.bg-online-drag')) return
+  event.preventDefault()
+  writeBannerPos(null)
+  placeOnlineBanner()
+}
+
+function onBannerKeyDown(event) {
+  if (!event.target?.classList?.contains('bg-online-drag')) return
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  const banner = root.querySelector('.bg-console > .bg-online-banner')
+  if (!banner) return
+  if (event.key === 'Home') {
+    event.preventDefault()
+    writeBannerPos(null)
+    placeOnlineBanner()
+    return
+  }
+  const step = event.shiftKey ? 48 : 16
+  let dx = 0, dy = 0
+  if (event.key === 'ArrowLeft') dx = -step
+  else if (event.key === 'ArrowRight') dx = step
+  else if (event.key === 'ArrowUp') dy = -step
+  else if (event.key === 'ArrowDown') dy = step
+  else return
+  event.preventDefault()
+  const origin = bannerVisualOrigin(banner)
+  writeBannerPos(clampBannerPoint(banner, origin.x + dx, origin.y + dy))
+  placeOnlineBanner()
+}
+
+document.addEventListener('pointerdown', onBannerPointerDown, true)
+document.addEventListener('pointermove', onBannerPointerMove, { capture: true, passive: false })
+document.addEventListener('pointerup', finishBannerDrag, true)
+document.addEventListener('pointercancel', finishBannerDrag, true)
+document.addEventListener('click', onBannerClickCapture, true)
+document.addEventListener('dblclick', onBannerDoubleClick, true)
+document.addEventListener('keydown', onBannerKeyDown, true)
 
 let onlineBannerPlacementFrame = 0
 function scheduleOnlineBannerPlacement() {

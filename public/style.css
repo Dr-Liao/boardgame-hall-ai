@@ -470,7 +470,8 @@ a.bg-btn { display: inline-block; text-decoration: none; }
 .bg-seat-row small { display: block; color: var(--text-dim); margin-top: 4px; font-size: 12px; }
 .bg-seat-number { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: #5b8cff15; color: #9abaff; font-size: 13px; font-weight: 700; }
 /* 联机房间悬浮栏：absolute 脱离 .bg-console 的纵向布局，收起时只占右上角一小块。
-   --bg-online-banner-top 由 app.js 按当前 Mod 的头部高度写入，默认贴在顶部。 */
+   --bg-online-banner-top 由 app.js 按当前 Mod 的头部高度写入，默认贴在头部下方。
+   拖开后加上 is-placed，改用记下的 left/top，并不再被左右边距拉满，避免挪走后仍铺开挡住牌桌。 */
 .bg-online-banner {
   position: absolute; top: var(--bg-online-banner-top, 12px); right: 16px; z-index: 25;
   display: flex; flex-direction: column; gap: 10px;
@@ -483,11 +484,36 @@ a.bg-btn { display: inline-block; text-decoration: none; }
   box-shadow: 0 14px 36px rgba(0, 0, 0, .5);
 }
 .bg-online-banner.is-collapsed { width: max-content; max-width: min(384px, calc(100vw - 16px)); gap: 6px; padding: 8px 12px; }
+.bg-online-banner.is-placed {
+  right: auto;
+  width: min(560px, calc(100vw - 24px));
+  max-height: calc(100dvh - 16px);
+}
+.bg-online-banner.is-placed.is-collapsed { width: max-content; max-width: min(384px, calc(100vw - 16px)); }
+.bg-online-banner.is-dragging { user-select: none; }
+.bg-online-bar { display: flex; align-items: stretch; gap: 2px; min-width: 0; max-width: 100%; }
+.bg-online-drag {
+  flex: none; align-self: stretch; display: grid; place-items: center; width: 22px;
+  margin: 0; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #8aa4be;
+  cursor: grab; touch-action: none;
+}
+.bg-online-drag:hover { background: #ffffff14; color: #fff; }
+.bg-online-drag:focus-visible { outline: 2px solid #5b8cff; outline-offset: 2px; }
+.bg-online-grip {
+  width: 8px; height: 14px;
+  background-image: radial-gradient(currentColor 1.15px, transparent 1.35px);
+  background-size: 4px 4.5px; background-position: center;
+}
 .bg-online-toggle {
   display: flex; flex-direction: column; gap: 5px; width: 100%; min-width: 0;
   margin: 0; padding: 2px; border: 0; border-radius: 8px; background: none; color: inherit;
-  font: inherit; text-align: left; cursor: pointer;
+  font: inherit; text-align: left; cursor: grab; touch-action: none;
 }
+.bg-online-bar .bg-online-toggle { flex: 1 1 auto; width: auto; }
+.bg-online-banner.is-dragging,
+.bg-online-banner.is-dragging .bg-online-drag,
+.bg-online-banner.is-dragging .bg-online-toggle,
+.bg-online-banner.is-dragging .bg-online-flash { cursor: grabbing; }
 .bg-online-toggle:hover .bg-online-name { color: #fff; }
 .bg-online-toggle:focus-visible { outline: 2px solid #5b8cff; outline-offset: 2px; }
 .bg-online-head-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -498,9 +524,20 @@ a.bg-btn { display: inline-block; text-decoration: none; }
 .bg-online-toggle-label, .bg-online-chevron { flex: none; color: #aac0d2; font-size: 11px; }
 .bg-online-meta-row { display: flex; flex-wrap: wrap; gap: 2px 12px; padding-left: 17px; color: #aac0d2; font-size: 12px; line-height: 1.5; min-width: 0; }
 .bg-online-details { display: flex; flex-direction: column; gap: 8px; }
+.bg-online-roster { list-style: none; margin: 0; padding: 2px 2px 0; display: flex; flex-direction: column; gap: 2px; }
+.bg-online-player { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 3px 2px; font-size: 12px; color: #d5e2ee; }
+.bg-online-player-seat { flex: none; color: #8eabc4; }
+.bg-online-player strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.bg-online-player-role { flex: none; color: #8eabc4; font-size: 11px; }
+.bg-online-player-ping { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; color: #d7e6f4; }
+.bg-online-player.is-me strong { color: #fff; }
+.bg-online-player.is-offline { color: #ffb7c0; }
+.bg-online-player.is-offline .bg-online-player-ping { color: #ff8d98; }
+.bg-online-player.is-ai .bg-online-dot { background: #9c8bdb; box-shadow: 0 0 0 3px rgba(156, 139, 219, .16); }
+.bg-online-player.is-ai .bg-online-player-ping { color: #c5b7f3; }
 .bg-online-banner .bg-online-actions { margin-top: 0; gap: 8px; }
 .bg-online-banner .bg-online-actions .bg-btn { padding: 8px 12px; font-size: 13px; }
-.bg-online-flash { margin: 0; padding: 2px; color: #ffd2d7; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.bg-online-flash { margin: 0; padding: 2px; color: #ffd2d7; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; cursor: grab; }
 .bg-room-code { font-variant-numeric: tabular-nums; user-select: text; }
 .bg-copy-invite { width: 96px; flex: none; white-space: nowrap; }
 .bg-copy-toast { position: fixed; z-index: 1100; bottom: 28px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); padding: 12px 18px; border-radius: 12px; background: #213d36; color: #d7f7e9; border: 1px solid #4f907d; box-shadow: 0 8px 28px #0005; font-size: 13px; pointer-events: none; }
@@ -521,6 +558,8 @@ a.bg-btn { display: inline-block; text-decoration: none; }
   /* 移动端展开时铺满宽度，操作按钮才好点；收起时仍只占右上角一条胶囊。 */
   .bg-online-banner { left: 8px; right: 8px; width: auto; max-height: calc(100dvh - var(--bg-online-banner-top, 8px) - 12px); }
   .bg-online-banner.is-collapsed { left: auto; width: max-content; max-width: min(344px, calc(100vw - 16px)); }
+  .bg-online-banner.is-placed { width: min(560px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); }
+  .bg-online-banner.is-placed.is-collapsed { width: max-content; max-width: min(344px, calc(100vw - 16px)); }
   .bg-online-banner .bg-online-actions { gap: 8px; }
   .bg-online-banner .bg-online-actions .bg-btn { padding: 9px 12px; }
   .bg-online-room { padding: 24px 16px; }

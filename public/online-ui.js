@@ -334,6 +334,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
   }
   // 悬浮联机栏默认收起，避免像以前的通栏一样一直占着牌桌的纵向空间；用户展开后记住选择。
   // 收起时仍显示房间码 / 连接 / 席位，并在有新提示时把提示附在胶囊下方，不让关键信息被折叠吞掉。
+  // 把手和标题区可以拖走（位移和记忆在 app.js）。复制邀请等操作按钮、房间码文本不参与拖动，避免挪位置时误触或选不中房间码。
   const BANNER_COLLAPSED_KEY = 'boardgame-hall.online-banner-collapsed'
   let bannerCollapsed = true
   try { bannerCollapsed = globalThis.localStorage?.getItem(BANNER_COLLAPSED_KEY) !== '0' } catch { /* 无 localStorage 时保持默认收起 */ }
@@ -344,6 +345,40 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
   function toggleBanner() {
     setBannerCollapsed(!bannerCollapsed)
     renderChrome()
+  }
+  function pingText(member) {
+    if (!member.online) return t('online.room.disconnected')
+    if (!Number.isInteger(member.ping)) return t('online.banner.pingUnknown')
+    return t('online.banner.ping', { ms: member.ping })
+  }
+  function roster() {
+    const room = state.online?.room
+    if (!room) return null
+    const me = mine()
+    const rows = [
+      ...room.members.map(member => ({ kind: 'human', seat: member.seat, member })),
+      ...(room.aiSeats || []).map(ai => ({ kind: 'ai', seat: ai.seat, ai })),
+    ].sort((a, b) => a.seat - b.seat)
+    return h('ul', { className: 'bg-online-roster', 'aria-label': t('online.banner.roster') },
+      rows.map(row => {
+        if (row.kind === 'ai') {
+          return h('li', { className: 'bg-online-player is-ai' },
+            h('span', { className: 'bg-online-dot', 'aria-hidden': 'true' }),
+            h('span', { className: 'bg-online-player-seat' }, t('online.banner.playerSeat', { seat: row.seat + 1 })),
+            h('strong', {}, row.ai.name),
+            h('span', { className: 'bg-online-player-ping' }, t('online.banner.ai')))
+        }
+        const member = row.member
+        const offline = !member.online
+        const known = Number.isInteger(member.ping)
+        return h('li', { className: 'bg-online-player' + (offline ? ' is-offline' : '') + (member.id === me?.id ? ' is-me' : '') },
+          h('span', { className: 'bg-online-dot' + (offline ? ' is-alert' : ''), 'aria-hidden': 'true' }),
+          h('span', { className: 'bg-online-player-seat' }, t('online.banner.playerSeat', { seat: member.seat + 1 })),
+          h('strong', {}, member.name),
+          member.host ? h('span', { className: 'bg-online-player-role' }, t('online.banner.host')) : null,
+          member.id === me?.id ? h('span', { className: 'bg-online-player-role' }, t('online.banner.you')) : null,
+          h('span', { className: 'bg-online-player-ping', title: offline ? t('online.room.disconnected') : (known ? t('online.banner.pingTitle') : t('online.banner.pingPending')) }, pingText(member)))
+      }))
   }
   function banner() {
     const online = state.online, room = online?.room
@@ -363,21 +398,28 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       'aria-label': t('online.banner.label'),
       'data-collapsed': String(collapsed),
     },
-      h('button', {
-        type: 'button', className: 'bg-online-toggle',
-        'aria-expanded': String(!collapsed),
-        ...(collapsed ? {} : { 'aria-controls': 'bg-online-banner-details' }),
-        'aria-label': toggleLabel, title: toggleLabel, onclick: toggleBanner,
-      },
-        h('span', { className: 'bg-online-head-row' },
-          h('span', { className: 'bg-online-dot is-' + tone, 'aria-hidden': 'true' }),
-          h('strong', { className: 'bg-online-name' }, room.game.name),
-          h('span', { className: 'bg-online-toggle-label' }, toggleText),
-          h('span', { className: 'bg-online-chevron', 'aria-hidden': 'true' }, collapsed ? '▾' : '▴')),
-        h('span', { className: 'bg-online-meta-row' },
-          h('span', { className: 'bg-room-code' }, t('online.room.code', { code: room.code })),
-          h('span', { role: 'status' }, t('online.banner.seat', { connection, seat: Number(me?.seat) + 1 })))),
+      h('div', { className: 'bg-online-bar' },
+        h('button', {
+          type: 'button', className: 'bg-online-drag',
+          'aria-label': t('online.banner.move'), title: t('online.banner.moveTitle'),
+          'aria-keyshortcuts': 'ArrowUp ArrowDown ArrowLeft ArrowRight Home',
+        }, h('span', { className: 'bg-online-grip', 'aria-hidden': 'true' })),
+        h('button', {
+          type: 'button', className: 'bg-online-toggle',
+          'aria-expanded': String(!collapsed),
+          ...(collapsed ? {} : { 'aria-controls': 'bg-online-banner-details' }),
+          'aria-label': toggleLabel, title: toggleLabel + ' · ' + t('online.banner.moveHint'), onclick: toggleBanner,
+        },
+          h('span', { className: 'bg-online-head-row' },
+            h('span', { className: 'bg-online-dot is-' + tone, 'aria-hidden': 'true' }),
+            h('strong', { className: 'bg-online-name' }, room.game.name),
+            h('span', { className: 'bg-online-toggle-label' }, toggleText),
+            h('span', { className: 'bg-online-chevron', 'aria-hidden': 'true' }, collapsed ? '▾' : '▴')),
+          h('span', { className: 'bg-online-meta-row' },
+            h('span', { className: 'bg-room-code' }, t('online.room.code', { code: room.code })),
+            h('span', { role: 'status' }, t('online.banner.seat', { connection, seat: Number(me?.seat) + 1 }))))),
       collapsed ? null : h('div', { id: 'bg-online-banner-details', className: 'bg-online-details' },
+        roster(),
         h('div', { className: 'bg-online-actions' },
           h('button', { className: 'bg-btn secondary bg-copy-invite', 'aria-label': t('online.copyInvite'), onclick: copyInvite }, copied ? t('online.copied') : t('online.copyInvite')),
           // 卡住恢复入口：任何操作看起来卡死时都可点；不依赖 working/busy，点了就强制拉回权威局面。

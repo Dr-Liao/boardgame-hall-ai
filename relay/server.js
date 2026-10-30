@@ -49,7 +49,29 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
     socket.send(JSON.stringify(value))
   }
   const view = room => ({ code: room.code, game: room.game, hallVersion: room.hallVersion, capacity: room.capacity, aiSeats: room.aiSeats, phase: room.phase,
-    members: [...room.members.values()].map(({ socket, ...member }) => ({ ...member, online: socket?.readyState === WebSocket.OPEN })) })
+    members: [...room.members.values()].map(({ socket, ...member }) => ({ ...member, online: socket?.readyState === WebSocket.OPEN,
+      ping: socket?.readyState === WebSocket.OPEN && Number.isInteger(socket.rtt) ? socket.rtt : null })) })
+  // 延迟用 WebSocket ping/pong 在中转侧测量，不走 room 广播：room 消息会让房主清掉快照基线并重发对局。
+  const sendPresence = room => {
+    const members = [...room.members.values()].map(member => ({
+      id: member.id,
+      ping: member.socket?.readyState === WebSocket.OPEN && Number.isInteger(member.socket.rtt) ? member.socket.rtt : null,
+    }))
+    for (const member of room.members.values()) send(member.socket, { type: 'presence', members })
+  }
+  const markPing = socket => {
+    if (socket.readyState !== WebSocket.OPEN || socket.rttPending) return
+    socket.rttPending = Date.now()
+    try { socket.ping() } catch { socket.rttPending = 0 }
+  }
+  const noteRtt = (socket, rtt) => {
+    const next = Math.max(0, Math.min(9999, rtt))
+    const previous = socket.rtt
+    socket.rtt = next
+    if (!socket.room || socket.member?.socket !== socket) return
+    if (previous != null && Math.abs(previous - next) < 15) return
+    sendPresence(socket.room)
+  }
   const announce = room => {
     room.touched = Date.now()
     for (const member of room.members.values()) send(member.socket, { type: 'room', room: view(room) })
@@ -60,6 +82,8 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
     socket.room = room; socket.member = member
     if (previous && previous !== socket) previous.close(4001, '此席位已重新连接')
     const token = sign({ code: room.code, nonce: room.nonce, member: { id: member.id, seat: member.seat, name: member.name, host: member.host }, expires: Date.now() + 7 * 86400000 })
+    if (Number.isInteger(socket.rtt)) sendPresence(room)
+    else markPing(socket)
     return { room: view(room), memberId: member.id, token }
   }
   const removeRoom = (room, reason) => {
@@ -78,7 +102,15 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
     const joinTimer = setTimeout(() => { if (!socket.room) socket.close(1008, '请先加入房间') }, 20000)
     joinTimer.unref()
     socket.alive = true; socket.windowStart = Date.now(); socket.count = 0
-    socket.on('pong', () => { socket.alive = true })
+    socket.on('pong', () => {
+      socket.alive = true
+      if (!socket.rttPending) return
+      const sent = socket.rttPending
+      socket.rttPending = 0
+      noteRtt(socket, Date.now() - sent)
+    })
+    const firstProbe = setTimeout(() => { if (socket.room && socket.member?.socket === socket) markPing(socket) }, 250)
+    firstProbe.unref?.()
     socket.on('error', () => {})
     socket.on('message', raw => {
       let message
@@ -181,10 +213,14 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
             send(socket, { type: 'result', id: message.id, ok: true, data: {} })
             return
           } else if (message.type === 'leave') {
+            const current = room
             if (member.host) removeRoom(room, '房主已解散房间')
             else if (room.phase === 'waiting') room.members.delete(member.id)
             else { member.socket = null; member.ready = false }
             socket.room = null; socket.member = null
+            // 先摘掉离开者自己的连接，再通知还在房间里的人。否则 socket.room 已空，
+            // 底下的 announce 不会执行，其他人会一直看到已离开的玩家在线。
+            if (!member.host) announce(current)
           } else if (message.type !== 'ping') fail('未知消息类型')
         }
         send(socket, { type: 'result', id: message.id, ok: true, data })
@@ -195,19 +231,27 @@ export function createRelay({ secret = process.env.RELAY_SECRET || id(), maxRoom
     })
     socket.on('close', () => {
       clearTimeout(joinTimer)
+      clearTimeout(firstProbe)
       if (socket.member?.socket === socket) { socket.member.socket = null; announce(socket.room) }
     })
   })
   const heartbeat = setInterval(() => {
     for (const socket of wss.clients) {
       if (!socket.alive) { socket.terminate(); continue }
-      socket.alive = false; socket.ping()
+      socket.alive = false
+      if (!socket.rttPending) markPing(socket)
     }
     for (const room of rooms.values()) if (![...room.members.values()].some(m => m.socket) && Date.now() - room.touched > idleMs) removeRoom(room, '房间已过期')
   }, 30000)
   heartbeat.unref()
+  // 比 30 秒存活检测更密，展开面板时才能看到还在变化的延迟；已有探测在途时不叠第二枚 ping。
+  const rttProbe = setInterval(() => {
+    for (const socket of wss.clients) if (socket.room && !socket.rttPending) markPing(socket)
+  }, 5000)
+  rttProbe.unref()
   server.stopRelay = () => {
     clearInterval(heartbeat)
+    clearInterval(rttProbe)
     for (const item of pending.values()) clearTimeout(item.timer)
     pending.clear()
     for (const socket of wss.clients) socket.terminate()
