@@ -7,6 +7,9 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
   const p2p = createP2P({ request, onChange: renderChrome, perf })
   let serial = -1, appliedSerial = -1, timer, working = false
   let resyncing = false
+  // 强制同步的代际：同步开始后，之前提交的命令即使晚到失败也不该再把界面回滚/弹旧错误。
+  let commandEpoch = 0
+  let lastResync = null
   let renderQueued = false
   let instanceId
   const retiredInstances = new Set()
@@ -244,6 +247,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
   }
   async function command(action, body = {}) {
     const perfStarted = perf ? performance.now() : 0
+    const epoch = commandEpoch
     let transport = 'relay'
     try {
       // P1.2：move / chat / prefs（轻量偏好同步）声明只要摘要响应，省掉命令后的整份 status 刷新。
@@ -276,57 +280,126 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     } catch (error) {
       const latest = await request('GET', '/online/status').catch(() => null)
       if (latest) { accept(latest); error.session = state.online?.session }
+      // 这条命令提交之后用户点过「强制同步」：权威状态已经由同步恢复，晚到的失败是旧提交的残留，
+      // 调用方（Mod 的 catch）不应再回滚界面或弹旧错误提示。
+      if (epoch !== commandEpoch) error.superseded = true
       throw error
+    }
+  }
+  const hostMember = () => state.online?.room?.members?.find(member => member.host) || null
+  const isConnectionError = error => /连接|中断|断开|未连接|离线|超时|reconnect|timeout|socket|closed/i.test(String(error?.message ?? error))
+  const sleepFor = ms => new Promise(resolve => {
+    try { const timer = setTimeout(resolve, ms); timer?.unref?.() } catch { resolve() }
+  })
+  const withTimeout = (task, ms, message) => new Promise((resolve, reject) => {
+    let timer = null
+    try { timer = setTimeout(() => reject(new Error(message)), ms); timer?.unref?.() } catch { /* 无定时器环境 */ }
+    task.then(value => { clearTimeout(timer); resolve(value) }, error => { clearTimeout(timer); reject(error) })
+  })
+  /** 断线后等待重连：主动重连只负责发起，连接是否真正建立由这里轮询确认（最多约 6 秒）。 */
+  async function waitForConnection(attempts = 30) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (state.online?.connected) return true
+      await sleepFor(200)
+      try { await refresh() } catch { /* 连接仍不可用，继续等 */ }
+    }
+    return !!state.online?.connected
+  }
+  /** 请房主重置快照基线并回一份权威视图；带超时，避免 relay 的 180 秒级等待把按钮卡死。 */
+  async function requestHostSync() {
+    try {
+      const value = await withTimeout(request('POST', '/online/command', { action: 'sync', body: {} }),
+        8000, t('online.resync.timeout'))
+      const revision = Number.isInteger(value?.revision) ? value.revision
+        : Number.isInteger(value?.session?.state?.revision) ? value.session.state.revision : null
+      return { ok: true, revision }
+    } catch (error) {
+      return { ok: false, error }
     }
   }
   /**
    * 强制同步（卡住恢复）：把本客户端手动拉回房主的权威局面。
-   * 覆盖三类阻塞：①丢过快照/界面停在旧 revision；②异常中断的行动把本地 busy/movePending
-   * 留在 true；③房主快照基线错乱导致长轮询只回 sessionOmitted。
+   * 覆盖：①丢过快照/界面停在旧 revision；②异常中断的行动把本地 busy/movePending 留在 true；
+   * ③房主快照基线错乱导致长轮询只回 sessionOmitted；④连接断开——先主动重连，不等后台退避。
    * 只重建展示状态，不提交任何游戏动作；房主的对局状态不会被这个按钮改变。
+   * 成功与否不再拿本厅缓存当标准：必须真的拿到房主回包里的权威 revision。
    */
   async function forceResync() {
     if (!state.online?.room || resyncing) return false
     resyncing = true
+    commandEpoch++
+    lastResync = null
     notice = t('online.resync.pending')
     renderChrome()
-    let synced = false
+    let reason = null
+    let targetRevision = null
+    let localOnly = false
     try {
       // ① 先解除本地门闩（不是对局状态）：异常中断的行动可能留下 busy/movePending。
       state.busy = false
       state.movePending = null
       state.error = null
-      // ② 请房主重置快照基线并广播一份完整快照；客人经 relay，房主本地直接执行。
-      //    失败也继续走 ③（例如房主暂时离线时至少把本厅能拿到的最新视图画出来）。
-      let targetRevision = null
-      try {
-        const result = await request('POST', '/online/command', { action: 'sync', body: {} })
-        if (Number.isInteger(result?.session?.state?.revision)) targetRevision = result.session.state.revision
-      } catch { /* 连接不可用时继续尝试下面的全量 status */ }
-      // ③ 无条件拉全量（full=1 跳过长轮询等待与 sessionOmitted/delta 判定），强制应用。
-      serial = -1
-      appliedSerial = -1
-      for (const delay of [0, 150, 600]) {
-        if (delay) await new Promise(resolve => setTimeout(resolve, delay))
-        const value = await request('GET', '/online/status?full=1')
-        accept(value, { force: true })
-        const reached = state.session && (targetRevision === null || state.session.state.revision >= targetRevision)
-        // 等待房间还没有 session 是正常状态：房间/准备信息同步成功即视为恢复。
-        const lobbyOnly = !state.session && state.online?.room?.phase !== 'playing'
-        if (reached || lobbyOnly) { synced = true; break }
+      // ② 断开时主动重连（不等后台 700ms～10s 的退避）；房主离线则直接给出对应原因。
+      const host = hostMember()
+      if (!state.online.connected) {
+        notice = t('online.resync.reconnecting'); renderChrome()
+        try { await request('POST', '/online/reconnect', {}) } catch { /* 由下面的等待判定 */ }
+        if (!await waitForConnection()) reason = 'offline'
+      } else if (host && host.online === false) {
+        reason = 'host'
       }
-      if (!state.session && state.online?.room?.phase === 'playing') synced = false
-      // ④ 让当前 Mod 清掉自己的本地演出/选择门闩（旧 Mod 没有该钩子时跳过）。
+      // ③ 请房主重置快照基线并回权威视图；连接类失败时强制重建一次连接再重试同一命令。
+      if (!reason) {
+        let synced = await requestHostSync()
+        if (!synced.ok && isConnectionError(synced.error)) {
+          try { await request('POST', '/online/reconnect', { force: true }) } catch { /* 等待连接即可 */ }
+          if (await waitForConnection()) synced = await requestHostSync()
+          else reason = 'offline'
+        }
+        if (!reason) {
+          if (!synced.ok) reason = state.online?.connected ? 'host' : 'offline'
+          else targetRevision = synced.revision
+        }
+        // 对局进行中却拿不到房主版本号：房主还没有对局会话（数据没恢复/未开局）。
+        if (!reason && targetRevision === null && state.online?.room?.phase === 'playing') reason = 'session'
+      }
+      // ④ 无条件拉一次全量（full=1 跳过省略/增量判定），把本厅能拿到的最新视图画出来；
+      //    只有「房主回包里的权威版本真的到达」才算同步成功。房主本机就是权威状态：
+      //    中转没连上时也能用自己的缓存重画界面，只是其他玩家暂时收不到更新。
+      serial = -1; appliedSerial = -1
+      let applied = false
+      for (let attempt = 0; attempt < (reason ? 1 : 16); attempt++) {
+        try {
+          const value = await request('GET', '/online/status?full=1')
+          accept(value, { force: true })
+        } catch { /* 下一轮再试 */ }
+        const lobbyOnly = !state.session && state.online?.room?.phase !== 'playing' && targetRevision === null
+        if (lobbyOnly || (state.session && (targetRevision === null || state.session.state.revision >= targetRevision))) {
+          applied = true
+          break
+        }
+        await sleepFor(150)
+      }
+      if (!reason && !applied) reason = state.online?.connected ? 'session' : 'offline'
+      else if (reason && applied && !!mine()?.host) {
+        // 房主本机就是权威：中转断开时也把本地界面重画好，只是其他玩家暂时收不到更新。
+        reason = null
+        localOnly = true
+      }
+      // ⑤ 让当前 Mod 清掉自己的本地演出/选择门闩（旧 Mod 没有该钩子时跳过）。
       try { recover?.() } catch { /* Mod 恢复钩子异常不影响大厅恢复 */ }
-      notice = !synced ? t('online.resync.failed')
-        : state.online?.busy ? t('online.resync.busy') : t('online.resync.done')
+      if (reason) notice = t('online.resync.failed.' + reason)
+      else if (localOnly) notice = t('online.resync.local')
+      else notice = state.online?.busy ? t('online.resync.busy') : t('online.resync.done')
     } catch {
+      reason = 'unknown'
       notice = t('online.resync.failed')
     } finally {
       resyncing = false
+      lastResync = { ok: !reason, reason: reason || null }
       render()
     }
-    return synced
+    return !reason
   }
   const memberStatus = member => {
     const status = !member.online ? t('online.room.disconnected') : member.ready ? t('online.room.ready') : t('online.room.notReady')
@@ -497,7 +570,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
     notice = ''
   }
   return { setupFields, setupSettings, settingsPanel, create, command, leave, loadSave, banner, waitingRoom, joinModal, boot,
-    onLocaleChange, forceResync,
+    onLocaleChange, forceResync, resyncResult: () => lastResync,
     applyPending: () => state.online && accept(state.online),
     joinButton: () => h('button', { className: 'bg-btn secondary', onclick: () => { notice = ''; modal = true; render() } }, t('online.join.joinButton')) }
 }

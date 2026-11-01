@@ -1,18 +1,18 @@
 @echo off
 setlocal
-pushd "%~dp0"
+pushd "%~dp0.."
 if errorlevel 1 goto directory_error
 
-echo Building Boardgame Hall Windows logic package...
-echo This package excludes Arkham card images and personal data.
+echo Building Boardgame Hall Windows hall-only package...
+echo This package bundles only the games listed in package.json boardgame.liteGames; other games install from the in-app game store.
 echo.
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\build-windows.ps1" -SkipAssets
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-windows.ps1" -HallOnly
 set "build_result=%errorlevel%"
 echo.
 if "%build_result%"=="0" (
   echo Build completed. Output:
-  echo "%~dp0dist"
+  echo "%~dp0..\dist"
 ) else (
   echo Build failed. See the error above.
 )

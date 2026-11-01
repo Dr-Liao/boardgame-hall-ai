@@ -152,14 +152,20 @@ test('客人也能请求 sync 重置快照基线（强制同步按钮的服务�
   assert.equal((await statusWith(guest, stamp)).json.sessionOmitted, true)
 
   // 浏览器「强制同步」会先发 action:'sync'（客人经 relay 到房主），再拉 full=1 全量。
+  const hostView = await host.call('status')
+  const hostRevision = hostView.json.session.state.revision
   const synced = await guest.command('sync')
   assert.equal(synced.json.ok, true, synced.json.error)
+  assert.equal(synced.json.syncView, true, 'sync 回包必须标记 syncView，客人本厅才能落权威视图')
+  assert.equal(synced.json.revision, hostRevision, 'sync 回包必须带房主权威版本，浏览器据此校验是否真的同步到位')
   assert.ok(synced.json.session, '客人 sync 必须拿回一份会话视图')
+  assert.equal(synced.json.session.state.revision, hostRevision)
   const forced = await guest.call('status?full=1&baseStamp=' + encodeURIComponent(stamp))
   assert.ok(forced.json.session, 'sync 后 full=1 必须回全量')
-  assert.equal(forced.json.session.state.revision, synced.json.session.state.revision)
-  // 房主侧同样可用（按钮在房主浏览器上走本地命令）。
+  assert.equal(forced.json.session.state.revision, hostRevision)
+  // 房主本地执行也带权威版本（房主浏览器用它校验）。
   const hostSynced = await host.command('sync')
   assert.equal(hostSynced.json.ok, true, hostSynced.json.error)
   assert.ok(hostSynced.json.session)
+  assert.equal(hostSynced.json.revision, (await host.call('status')).json.session.state.revision)
 })

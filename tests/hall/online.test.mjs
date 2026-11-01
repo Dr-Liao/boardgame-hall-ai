@@ -254,6 +254,29 @@ test('relay restart restores room code and seats with persistent signing secret'
   assert.equal((await guest.call('status')).room.code, created.room.code)
 })
 
+test('reconnect route: 断线时主动重连（不等后台退避），连接恢复后回到房间并同步', async t => {
+  const { halls: [host, guest], relay, relayUrl } = await fixture(t)
+  const created = await host.call('create', { relayUrl, modId: 'gobang', capacity: 2, fillAi: false })
+  await guest.call('join', { relayUrl, code: created.room.code }); await guest.call('ready', { ready: true })
+  assert.equal((await host.command('start')).ok, true)
+  await host.command('move', { revision: 0, move: { x: 7, y: 7 } })
+  const port = relay.address().port
+  await stop(relay)
+  await waitFor(async () => !(await guest.call('status')).connected)
+  // 「强制同步」在断线时会先打这条路由：主动发起 resume，而不是等 700ms～10s 的退避。
+  const reconnect = await guest.call('reconnect', {})
+  assert.equal(reconnect.ok, true, reconnect.error)
+  assert.equal(reconnect.connected, false)
+  assert.ok(reconnect.started || reconnect.connecting)
+  const replacement = createRelay({ secret: 'integration-test-secret' })
+  await new Promise(r => replacement.listen(port, '127.0.0.1', r))
+  t.after(() => stop(replacement))
+  await waitFor(async () => {
+    const value = await guest.call('status')
+    return value.connected && value.session?.state?.revision === 1 && value.room?.members.every(m => m.online)
+  }, 15000)
+})
+
 for (const modId of ['ox', CARDS]) test(`${modId}: host process restart restores saved game and authenticated room; guest can leave and return`, async t => {
   const { halls: [initial, guest], relayUrl, mods } = await fixture(t)
   await stop(initial.server)
@@ -614,6 +637,26 @@ test('online saves reopen as joinable rooms and preserve seats, private state an
   assert.deepEqual(after.events, before.events)
   assert.deepEqual(after.state.hands[0], [])
   assert.equal((await third.command('move', { revision: 1, move: after.state.legalMoves.find(m => m.optionId === 'done') })).ok, true)
+})
+
+// 回归：大厅重启/断线重连后，房主必须重新给各席位发布完整视图。
+// 旧实现里 online.restore() 在连上中转前就调用 onRoom，把落盘快照里的房间签名记成广播基线；
+// 真实房间与快照相同时签名比较会认为「没变化」，快照不再重发——重启过的客人会一直停在等待界面，
+// 只有点「强制同步」或等房间状态真正变化才恢复。这里用「断线→重连后房间状态与断线前完全相同」直接
+// 复现同一条件：重连成功必须让房主重新发布一次快照，而不是靠签名不变跳过。
+test('reconnect republishes full views even when the room state is unchanged', async t => {
+  const { halls: [host, guest], relayUrl } = await fixture(t)
+  const created = await host.call('create', { relayUrl, modId: 'ox', capacity: 2, fillAi: false })
+  await guest.call('join', { relayUrl, code: created.room.code }); await guest.call('ready', { ready: true })
+  assert.equal((await host.command('start')).ok, true)
+  assert.equal((await host.command('move', { revision: 0, move: { x: 0, y: 0 } })).ok, true)
+  await waitFor(async () => (await guest.call('status')).session?.state.revision === 1)
+  const before = host.server.online.metrics.snapshots
+  const reconnect = host.server.online.reconnect(true)
+  assert.ok(reconnect.started || reconnect.connecting || reconnect.connected)
+  await waitFor(async () => (await host.call('status')).connected, 15000)
+  await waitFor(async () => host.server.online.metrics.snapshots > before, 5000, '重连后重新发布的完整快照')
+  assert.equal((await guest.call('status')).session?.state.revision, 1)
 })
 
 test('status updates wake immediately and host operations use the local authority', async t => {

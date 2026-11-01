@@ -1867,9 +1867,15 @@ async function move(x, y) {
     if (r.session) { state.session = r.session; rememberSession(r.session.sessionId) }
     else if (r.sessionId) rememberSession(r.sessionId)
   } catch (e) {
-    // 服务端拒绝时回滚到服务端返回的最新状态（或落子前状态）。
-    state.session = e.session || original
-    state.error = errorText(e)
+    // 这条行动提交之后用户点过「强制同步」：权威状态已由同步恢复，晚到的失败是旧提交的残留，
+    // 不要再回滚到落子前的快照、也不要再弹旧错误（否则看起来像同步没生效）。
+    if (e.superseded) {
+      if (e.session && (!state.session || (e.session.state?.revision ?? -1) >= (state.session.state?.revision ?? -1))) state.session = e.session
+    } else {
+      // 服务端拒绝时回滚到服务端返回的最新状态（或落子前状态）。
+      state.session = e.session || original
+      state.error = errorText(e)
+    }
   }
   state.busy = false; render()
 }
@@ -1901,7 +1907,8 @@ async function retryAi() {
   } catch (e) {
     if (state.session?.sessionId === session.sessionId) {
       if (e.session) state.session = e.session
-      state.error = errorText(e)
+      // 强制同步已经接手恢复的旧提交失败，不再弹旧错误。
+      if (!e.superseded) state.error = errorText(e)
     }
   } finally {
     waiting = false

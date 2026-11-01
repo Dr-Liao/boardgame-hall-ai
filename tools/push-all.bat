@@ -23,7 +23,7 @@ REM 推送被远端拒绝时也会自动拉取、合并后重试；合并冲突�
 REM 可选参数 --yes：使用默认提交说明并跳过确认；--no-pause：结束时不暂停。
 setlocal EnableExtensions
 chcp 65001 >nul
-pushd "%~dp0" || goto directory_error
+pushd "%~dp0.." || goto directory_error
 
 set "AUTO="
 set "NOPAUSE="
@@ -239,7 +239,7 @@ set "RESULT=1"
 goto finish
 
 :directory_error
-echo [错误] 无法进入脚本所在目录 "%~dp0"。
+echo [错误] 无法进入项目目录 "%~dp0.."。
 pause
 exit /b 1
 

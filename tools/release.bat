@@ -23,7 +23,7 @@ REM 用法：release.bat [版本号] [更新说明] [--no-pause]
 REM   不传版本号时会提示输入，例如 0.3.0（不带 v）。
 setlocal EnableExtensions
 chcp 65001 >nul
-pushd "%~dp0" || goto directory_error
+pushd "%~dp0.." || goto directory_error
 
 set "VERSION=%~1"
 if /i "%VERSION%"=="--no-pause" set "VERSION="
@@ -257,7 +257,7 @@ set "RESULT=1"
 goto finish
 
 :directory_error
-echo [错误] 无法进入脚本所在目录 "%~dp0"。
+echo [错误] 无法进入项目目录 "%~dp0.."。
 pause
 exit /b 1
 

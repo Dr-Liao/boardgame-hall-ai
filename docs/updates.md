@@ -99,7 +99,7 @@ GitHub
 
 ## 发布大厅
 
-1. 双击根目录的 `release.bat`（也可以 `release.bat 1.1.0 "更新说明"`）：它只处理大厅仓库，检查工作区干净且与 `origin/main` 同步，更新根 `package.json` 和 `package-lock.json` 的版本号，提交 `chore: release v1.1.0`、打 tag 并推送。诡镇奇谈的版本号不会被改动。
+1. 双击 `tools/release.bat`（也可以 `tools/release.bat 1.1.0 "更新说明"`）：它只处理大厅仓库，检查工作区干净且与 `origin/main` 同步，更新根 `package.json` 和 `package-lock.json` 的版本号，提交 `chore: release v1.1.0`、打 tag 并推送。诡镇奇谈的版本号不会被改动。
 2. 手动发版等价于修改根 `package.json` 的 `version`（格式 `x.y.z`）并提交，然后打 tag 并推送，tag 中的说明文字会作为更新说明显示在大厅里：
 
    ```bash
@@ -192,7 +192,7 @@ user-data/             存档、配置、AI 角色和下载的游戏，所有版
 edition.json           仅纯大厅版有：列出内置的游戏
 ```
 
-正式发布的是纯大厅版：Windows 用 `build-windows-hall.bat` 或 `npm run build:windows:hall` 构建，macOS 用 `npm run build:mac:hall`。它只内置根 `package.json` 的 `boardgame.liteGames` 列出的游戏（目前为五子棋、井字棋、扑克合集），诡镇等游戏从游戏商店安装。更新时按签名清单里的 `liteGames` 只下载内置游戏；更新成功后大厅会把这份新清单写回 `edition.json`，所以后来新增进 `liteGames` 的游戏会在下一次更新时一起装上（旧版本遗留的 `edition.json` 不会再把它们过滤掉）。本地自行构建、内置了诡镇的完整版没有 `edition.json`，从 Release 更新时不会带上内置的诡镇，需要从商店重新安装（存档不受影响）。
+正式发布的是纯大厅版：Windows 用 `tools/build-windows-hall.bat` 或 `npm run build:windows:hall` 构建，macOS 用 `npm run build:mac:hall`。它只内置根 `package.json` 的 `boardgame.liteGames` 列出的游戏（目前为五子棋、井字棋、扑克合集），诡镇等游戏从游戏商店安装。更新时按签名清单里的 `liteGames` 只下载内置游戏；更新成功后大厅会把这份新清单写回 `edition.json`，所以后来新增进 `liteGames` 的游戏会在下一次更新时一起装上（旧版本遗留的 `edition.json` 不会再把它们过滤掉）。本地自行构建、内置了诡镇的完整版没有 `edition.json`，从 Release 更新时不会带上内置的诡镇，需要从商店重新安装（存档不受影响）。
 
 ### 大厅更新流程
 

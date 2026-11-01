@@ -5,10 +5,10 @@ import { spawnSync } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
-import { zipDirectory } from '../lib/zip.js'
-import { shipsFile, stageGames } from './release/stage-games.mjs'
+import { zipDirectory } from '../../lib/zip.js'
+import { shipsFile, stageGames } from '../release/stage-games.mjs'
 
-const toolsDir = path.dirname(fileURLToPath(import.meta.url))
+const toolsDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const projectRoot = path.dirname(toolsDir)
 const args = new Set(process.argv.slice(2))
 const option = name => process.argv.slice(2).find(value => value.startsWith(name + '='))?.slice(name.length + 1)

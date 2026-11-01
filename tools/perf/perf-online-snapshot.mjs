@@ -1,6 +1,6 @@
 // 联机同步开销基准（诊断用，不参与发布构建）。
 //
-//   node tools/perf-online-snapshot.mjs [--seats=4] [--moves=250] [--trim=1]
+//   node tools/perf/perf-online-snapshot.mjs [--seats=4] [--moves=250] [--trim=1]
 //
 // 复刻大厅的热路径，量出「每一步」在房主进程里要花多少同步 CPU：
 //   1. sessionView：publishOnline 会为每个真人席位重建一次个人视图
@@ -13,10 +13,10 @@
 // 引擎按「自动选第一个合法行动」推进，只用于制造随步数增长的事件量，
 // 不代表真实牌序或 AI 行为；绝对值看数量级，趋势看同一台机器上的前后对比。
 
-import mod from '../games/arkhamhorror/index.js'
-import { onlineEventHistory } from '../lib/online.js'
-import { snapshotChanges } from '../lib/online-sync.js'
-import { trimEventVisuals } from '../lib/server.js'
+import mod from '../../games/arkhamhorror/index.js'
+import { onlineEventHistory } from '../../lib/online.js'
+import { snapshotChanges } from '../../lib/online-sync.js'
+import { trimEventVisuals } from '../../lib/server.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'

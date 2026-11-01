@@ -2,13 +2,13 @@
 // 联机延迟基准：「点击 → 桌面」的服务端分阶段数字（P0 交付物，诊断用，不参与发布构建）。
 //
 // 用法：
-//   node tools/perf-online-latency.mjs                                  # 4 真人厅 + 本机 relay，真实 hub 开局，推进 100 步（前 5 步预热）
-//   node tools/perf-online-latency.mjs --moves=20
-//   node tools/perf-online-latency.mjs --setup=fast --moves=20           # legacyAutoStart 跳过 hub，只做快速冒烟
-//   node tools/perf-online-latency.mjs --ai=2 --moves=10                # 4 人房，后 2 席留给 AI（合法动作兜底，不联网）
-//   node tools/perf-online-latency.mjs --moves=20 --json=artifacts/perf/run.json
-//   node tools/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/base.json   # 不存在则写基线；存在则比较，回归 exit 1
-//   node tools/perf-online-latency.mjs --moves=20 --compare=artifacts/perf/run.json     # 并排对照，不影响退出码
+//   node tools/perf/perf-online-latency.mjs                                  # 4 真人厅 + 本机 relay，真实 hub 开局，推进 100 步（前 5 步预热）
+//   node tools/perf/perf-online-latency.mjs --moves=20
+//   node tools/perf/perf-online-latency.mjs --setup=fast --moves=20           # legacyAutoStart 跳过 hub，只做快速冒烟
+//   node tools/perf/perf-online-latency.mjs --ai=2 --moves=10                # 4 人房，后 2 席留给 AI（合法动作兜底，不联网）
+//   node tools/perf/perf-online-latency.mjs --moves=20 --json=artifacts/perf/run.json
+//   node tools/perf/perf-online-latency.mjs --moves=20 --baseline=artifacts/perf/base.json   # 不存在则写基线；存在则比较，回归 exit 1
+//   node tools/perf/perf-online-latency.mjs --moves=20 --compare=artifacts/perf/run.json     # 并排对照，不影响退出码
 //
 // 进程模型（与 docs/arkham-performance-roadmap.md §1.1 基线口径一致）：
 //   单 Node 进程内 createRelay + N 个 createServer（每个大厅随机端口；房主 persist=true、客人 persist=false），
@@ -66,9 +66,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 // P3.1：status 增量还原（纯函数、无副作用，可安全静态 import）。
-import { applySnapshotChanges } from '../lib/online-sync.js'
+import { applySnapshotChanges } from '../../lib/online-sync.js'
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const MOD_ID = 'arkhamhorror'
 const SCHEMA_VERSION = 1
 const TOOL = 'perf-online-latency'
@@ -81,7 +81,7 @@ const MAX_CONSECUTIVE_FAILURES = 10
 
 const USAGE = `联机延迟基准（同进程多厅 + 本机 relay）
 
-用法：node tools/perf-online-latency.mjs [选项]
+用法：node tools/perf/perf-online-latency.mjs [选项]
 
 选项：
   --seats=4          大厅/房间席位数（Arkham 支持 2–4；默认 4）
@@ -195,10 +195,10 @@ process.env.AI_CHAT_ENABLED = '0'
 // 空字符串会被 lib/agent/config.js 的 pick() 视为「未配置」，从而走 legalMoves 兜底。
 process.env.AI_API_KEY = ''
 
-const { createRelay } = await import('../relay/server.js')
-const { createServer } = await import('../lib/server.js')
-const { perf } = await import('../lib/perf.js')
-const { loadMods } = await import('../lib/mods.js')
+const { createRelay } = await import('../../relay/server.js')
+const { createServer } = await import('../../lib/server.js')
+const { perf } = await import('../../lib/perf.js')
+const { loadMods } = await import('../../lib/mods.js')
 
 // ---------------------------------------------------------------------------
 // 3. 通用工具

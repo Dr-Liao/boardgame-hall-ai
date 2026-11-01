@@ -12,6 +12,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { createOnlineFixture, waitFor } from './helpers/online.mjs'
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -185,6 +186,30 @@ test('guest 大厅缓存静态表：浏览器刷新由本地大厅补发，不�
   assert.equal((await host.call('status')).json.serial, hostSerialBefore)
 })
 
+test('客人强制同步：回包带房主权威版本与视图，本厅已有静态表时不重复下发', async t => {
+  const { halls, relayUrl } = await fixture(t)
+  const [host, guest] = halls
+  await startRoom(halls, relayUrl)
+  // 房主再走一步：sync 回包的权威版本必须比客人本厅缓存的旧 revision 新时才真正证明它带回了房主视图。
+  const before = (await host.call('status')).json.session
+  const moved = await host.command('move', { revision: before.state.revision, move: { action: 'pass' } })
+  assert.equal(moved.json.ok, true, moved.json.error)
+  const hostRevision = (await host.call('status')).json.session.state.revision
+  assert.ok(hostRevision > before.state.revision)
+  const guestVersion = (await guest.call('status')).json.session.staticVersion
+  assert.equal(typeof guestVersion, 'string')
+  const synced = await guest.command('sync', { client: { staticVersion: guestVersion } })
+  assert.equal(synced.json.ok, true, synced.json.error)
+  assert.equal(synced.json.syncView, true, 'sync 回包必须标记 syncView，客人本厅才能落权威视图')
+  assert.equal(synced.json.revision, hostRevision, 'sync 回包必须带房主权威版本')
+  assert.ok(synced.json.session, 'sync 回包必须带房主权威视图')
+  assert.equal(synced.json.session.state.revision, hostRevision)
+  assert.equal(synced.json.session.state.cards, undefined, '客人拿精简视图，静态表由本厅缓存补发')
+  assert.equal(synced.json.static, undefined, '本厅已缓存当前静态表时不应重复下发')
+  // 本厅缓存立即被房主权威视图修正（浏览器随后 full=1 就能拿到房主版本）。
+  assert.equal((await guest.call('status')).json.session.state.revision, hostRevision)
+})
+
 test('BOARDGAME_ONLINE_STATIC=0 一键回滚：所有响应都带全量静态表', async t => {
   const { halls, relayUrl } = await fixture(t, { env: { BOARDGAME_ONLINE_STATIC: '0' } })
   const [host] = halls
@@ -200,4 +225,48 @@ test('BOARDGAME_ONLINE_STATIC=0 一键回滚：所有响应都带全量静态表
   const command = await host.command('move', { revision: legacy.json.session.state.revision, move: { action: 'pass' }, client: { staticVersion: '' } })
   assert.equal(command.json.ok, true, command.json.error)
   assert.ok(command.json.session.state.cards, '回滚后命令响应也是全量视图')
+})
+test('强制同步：客人大厅丢了静态表缓存时，sync 回包直接补发静态表（快照通道异常也能自愈）', async t => {
+  const { halls, relayUrl } = await fixture(t)
+  const [host] = halls
+  const created = await host.call('create', { relayUrl, modId: 'fixture-static', capacity: 2, fillAi: false })
+  assert.equal(created.json.ok, true, created.json.error)
+  const room = created.json.room
+  // 用一个「原始中转客户端」冒充客人大厅（本厅没有静态表缓存，例如客人大厅进程刚重启）。
+  const socket = new WebSocket(relayUrl.replace('http:', 'ws:') + '/ws')
+  t.after(() => socket.close())
+  await new Promise(resolve => socket.addEventListener('open', resolve, { once: true }))
+  const send = data => socket.send(JSON.stringify({ id: randomUUID(), ...data }))
+  const rpc = (data, timeout = 8000) => new Promise((resolve, reject) => {
+    const id = randomUUID()
+    const timer = setTimeout(() => reject(new Error('中转 RPC 超时')), timeout)
+    const listener = event => {
+      let message
+      try { message = JSON.parse(event.data) } catch { return }
+      if (message.type !== 'result' || message.id !== id) return
+      clearTimeout(timer)
+      socket.removeEventListener('message', listener)
+      resolve(message)
+    }
+    socket.addEventListener('message', listener)
+    socket.send(JSON.stringify({ ...data, id }))
+  })
+  const joined = await rpc({ type: 'join', code: room.code, name: '重启后的客人',
+    hallVersion: room.hallVersion, versions: { [room.game.id]: room.game.version } })
+  assert.equal(joined.ok, true, joined.error)
+  send({ type: 'ready', ready: true })
+  await waitFor(async () => (await host.call('status')).json.room?.members.some(member => !member.host && member.ready))
+  assert.equal((await host.command('start')).json.ok, true)
+  // 客人大厅声明「没有静态表」（hallStaticVersion=''）：sync 回包必须把静态表一起带回来。
+  const synced = await rpc({ type: 'request', action: 'sync', body: { hallStaticVersion: '' } })
+  assert.equal(synced.ok, true, synced.error)
+  assert.equal(synced.data.syncView, true)
+  assert.ok(synced.data.session, 'sync 回包必须带房主权威视图')
+  assert.ok(synced.data.static?.cards, '本厅缺静态表时 sync 回包必须补发静态表')
+  assert.equal(synced.data.static.version, synced.data.session.staticVersion)
+  assert.equal(synced.data.session.state.cards, undefined, '会话本身仍是精简视图')
+  // 已经声明当前静态表版本后，下一次 sync 不再重复下发。
+  const again = await rpc({ type: 'request', action: 'sync', body: { hallStaticVersion: synced.data.static.version } })
+  assert.equal(again.ok, true, again.error)
+  assert.equal(again.data.static, undefined, '静态表版本一致时不应重复下发')
 })

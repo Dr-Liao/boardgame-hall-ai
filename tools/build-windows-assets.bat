@@ -1,18 +1,18 @@
 @echo off
 setlocal
-pushd "%~dp0"
+pushd "%~dp0.."
 if errorlevel 1 goto directory_error
 
-echo Building Boardgame Hall macOS packages...
-echo This creates Apple Silicon and Intel packages with bundled Node.js.
+echo Building Arkham Horror card image package...
+echo This package is large. Please keep this window open.
 echo.
 
-node "%~dp0tools\build-macos.mjs" --arch=all
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-windows.ps1" -AssetsOnly
 set "build_result=%errorlevel%"
 echo.
 if "%build_result%"=="0" (
   echo Build completed. Output:
-  echo "%~dp0dist"
+  echo "%~dp0..\dist"
 ) else (
   echo Build failed. See the error above.
 )

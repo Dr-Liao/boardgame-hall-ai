@@ -389,3 +389,188 @@ test('展开联机栏列出每位玩家的延迟和掉线，收起时不渲染�
   assert.match(text(players[3]), /—/)
   assert.equal(byClass(players[3], 'bg-online-player-ping')[0].props.title, '延迟尚未测到')
 })
+
+// ---------------------------------------------------------------------------
+// 强制同步的恢复路径：断线先主动重连；成功以房主回包版本为准；失败按原因提示
+// ---------------------------------------------------------------------------
+
+function installFastTimers(t) {
+  let fast = false
+  let poll = null
+  t.mock.method(globalThis, 'setTimeout', (fn, ms) => {
+    const handle = { unref() {} }
+    if (fast && Number(ms) <= 500) { fn(); return handle }
+    poll = fn
+    return handle
+  })
+  return { enable: () => { fast = true }, disable: () => { fast = false }, poll: () => poll }
+}
+
+function installBrowserGlobals(t) {
+  const oldStorage = globalThis.localStorage, oldWindow = globalThis.window
+  globalThis.localStorage = { getItem: () => '', setItem() {} }
+  globalThis.window = { addEventListener() {} }
+  t.after(() => {
+    if (oldStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = oldStorage
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow
+  })
+}
+
+test('强制同步：连接断开时先主动重连，再同步到房主权威版本', async t => {
+  installBrowserGlobals(t)
+  const timers = installFastTimers(t)
+  let connected = false
+  let serial = 1
+  const session = revision => ({ sessionId: 'game', modId: 'arkhamhorror', modName: 'net', mySeat: 1,
+    state: { revision, currentSeat: 1, pendingChoice: null } })
+  const room = {
+    code: 'NET', phase: 'playing',
+    members: [{ id: 'm-host', host: true, seat: 0, online: true }, { id: 'm-me', host: false, seat: 1, online: true }],
+  }
+  const status = (extra = {}) => ({ ok: true, instanceId: 'net-process', serial: serial++, connected, room, ...extra })
+  let reconnects = 0, syncs = 0, fulls = 0
+  const request = async (method, pathname) => {
+    if (method === 'POST' && pathname === '/online/reconnect') {
+      reconnects += 1
+      connected = true
+      return { ok: true, started: true, connected: false }
+    }
+    if (method === 'POST' && pathname === '/online/command') {
+      syncs += 1
+      return { ok: true, syncView: true, revision: 7, session: session(7) }
+    }
+    if (pathname.startsWith('/online/status?full=1')) {
+      fulls += 1
+      return status({ session: session(7) })
+    }
+    return status({ session: session(connected ? 7 : 3) })
+  }
+  const state = { busy: false, chat: { pendings: [] }, catalog: [] }
+  const ui = createOnlineUI({ state, render() {}, renderChrome() {}, request, loadGame() {} })
+  await ui.boot()
+  assert.equal(state.online.connected, false)
+  timers.enable()
+  const synced = await ui.forceResync()
+  assert.equal(synced, true)
+  assert.ok(reconnects >= 1, '断线时强制同步必须先主动重连')
+  assert.equal(syncs, 1, '重连成功后只请房主同步一次')
+  assert.ok(fulls >= 1)
+  assert.equal(state.session.state.revision, 7, '必须应用房主权威视图')
+  assert.deepEqual(ui.resyncResult(), { ok: true, reason: null })
+  assert.equal(state.busy, false)
+})
+
+test('强制同步：房主离线时不发同步命令，并按「房主不可达」提示', async t => {
+  installBrowserGlobals(t)
+  installFastTimers(t)
+  let serial = 1
+  const session = revision => ({ sessionId: 'game', modId: 'ox', mySeat: 1, state: { revision } })
+  const room = {
+    code: 'HOSTOFF', phase: 'playing',
+    members: [{ id: 'm-host', host: true, seat: 0, online: false }, { id: 'm-me', host: false, seat: 1, online: true }],
+  }
+  const request = async (method, pathname) => {
+    if (method === 'POST' && pathname === '/online/command') throw new Error('不应在房主离线时发同步命令')
+    return { ok: true, instanceId: 'hostoff-process', serial: serial++, connected: true, room, session: session(2) }
+  }
+  const state = { busy: false, chat: { pendings: [] }, catalog: [] }
+  const ui = createOnlineUI({ state, render() {}, renderChrome() {}, request, loadGame() {} })
+  await ui.boot()
+  const synced = await ui.forceResync()
+  assert.equal(synced, false)
+  assert.deepEqual(ui.resyncResult(), { ok: false, reason: 'host' })
+})
+
+test('强制同步：房主回了版本但本厅缓存没追到，不能误报成功', async t => {
+  installBrowserGlobals(t)
+  const timers = installFastTimers(t)
+  let serial = 1
+  const session = revision => ({ sessionId: 'game', modId: 'ox', mySeat: 1, state: { revision } })
+  const room = {
+    code: 'STALE', phase: 'playing',
+    members: [{ id: 'm-host', host: true, seat: 0, online: true }, { id: 'm-me', host: false, seat: 1, online: true }],
+  }
+  const status = extra => ({ ok: true, instanceId: 'stale-process', serial: serial++, connected: true, room, ...extra })
+  let syncs = 0
+  const request = async (method, pathname) => {
+    if (method === 'POST' && pathname === '/online/command') {
+      syncs += 1
+      // 房主说当前是 r7，但本厅缓存（模拟静态表/快照没追上）一直停在 r3。
+      return { ok: true, syncView: true, revision: 7, session: session(7) }
+    }
+    return status({ session: session(3) })
+  }
+  const state = { busy: false, chat: { pendings: [] }, catalog: [] }
+  const ui = createOnlineUI({ state, render() {}, renderChrome() {}, request, loadGame() {} })
+  await ui.boot()
+  timers.enable()
+  const synced = await ui.forceResync()
+  assert.equal(synced, false, '没拿到房主版本就不能报成功')
+  assert.equal(syncs, 1)
+  assert.deepEqual(ui.resyncResult(), { ok: false, reason: 'session' })
+  assert.equal(state.session.state.revision, 3)
+})
+
+test('强制同步：同步开始后晚到的旧命令失败标记为 superseded，不回滚也不弹旧错误', async t => {
+  installBrowserGlobals(t)
+  const timers = installFastTimers(t)
+  let serial = 1
+  const session = revision => ({ sessionId: 'game', modId: 'ox', mySeat: 1, state: { revision } })
+  const room = {
+    code: 'SUPERSEDE', phase: 'playing',
+    members: [{ id: 'm-host', host: true, seat: 0, online: true }, { id: 'm-me', host: false, seat: 1, online: true }],
+  }
+  const status = extra => ({ ok: true, instanceId: 'supersede-process', serial: serial++, connected: true, room, ...extra })
+  let releaseCommand
+  const commandGate = new Promise(resolve => { releaseCommand = resolve })
+  const request = async (method, pathname, body) => {
+    if (method === 'POST' && pathname === '/online/command') {
+      if (body?.action === 'sync') return { ok: true, syncView: true, revision: 9, session: session(9) }
+      await commandGate
+      throw Object.assign(new Error('连接已中断；重新连接后会同步最新对局'), { code: 'DISCONNECTED' })
+    }
+    return status({ session: session(9) })
+  }
+  const state = { busy: false, chat: { pendings: [] }, catalog: [] }
+  const ui = createOnlineUI({ state, render() {}, renderChrome() {}, request, loadGame() {} })
+  await ui.boot()
+  const pending = ui.command('move', { sessionId: 'game', revision: 9, move: { action: 'endTurn' } }).catch(error => error)
+  timers.enable()
+  assert.equal(await ui.forceResync(), true)
+  releaseCommand()
+  const error = await pending
+  assert.equal(error.superseded, true, '同步之后才落地的旧命令错误必须标记 superseded')
+  assert.equal(state.session.state.revision, 9, '旧命令失败不能把界面回滚到重置前的快照')
+})
+
+test('强制同步：房主在中转断开时仍用本机权威状态刷新界面', async t => {
+  installBrowserGlobals(t)
+  const timers = installFastTimers(t)
+  let serial = 1
+  const session = revision => ({ sessionId: 'game', modId: 'ox', mySeat: 0, state: { revision } })
+  const room = {
+    code: 'HOSTLOCAL', phase: 'playing',
+    members: [{ id: 'm-host', host: true, seat: 0, online: false }, { id: 'm-guest', host: false, seat: 1, online: false }],
+  }
+  const status = extra => ({ ok: true, instanceId: 'hostlocal-process', serial: serial++, connected: false, room, memberId: 'm-host', ...extra })
+  let reconnects = 0
+  const request = async (method, pathname) => {
+    if (method === 'POST' && pathname === '/online/reconnect') {
+      reconnects += 1
+      return { ok: true, started: false, connected: false }
+    }
+    if (method === 'POST' && pathname === '/online/command') throw new Error('中转连接已断开，正在重新连接')
+    return status({ session: session(4) })
+  }
+  const state = { busy: true, chat: { pendings: [] }, catalog: [] }
+  const ui = createOnlineUI({ state, render() {}, renderChrome() {}, request, loadGame() {} })
+  await ui.boot()
+  assert.equal(state.online.memberId, 'm-host')
+  timers.enable()
+  const synced = await ui.forceResync()
+  assert.equal(synced, true, '房主本机是权威，中转断开也应能用本地状态恢复界面')
+  assert.ok(reconnects >= 1, '断线时仍会先尝试重连')
+  assert.equal(state.busy, false)
+  assert.equal(state.session.state.revision, 4)
+  assert.deepEqual(ui.resyncResult(), { ok: true, reason: null })
+})

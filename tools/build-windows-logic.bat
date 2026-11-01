@@ -1,18 +1,18 @@
 @echo off
 setlocal
-pushd "%~dp0"
+pushd "%~dp0.."
 if errorlevel 1 goto directory_error
 
-echo Building Arkham Horror card image package...
-echo This package is large. Please keep this window open.
+echo Building Boardgame Hall Windows logic package...
+echo This package excludes Arkham card images and personal data.
 echo.
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\build-windows.ps1" -AssetsOnly
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-windows.ps1" -SkipAssets
 set "build_result=%errorlevel%"
 echo.
 if "%build_result%"=="0" (
   echo Build completed. Output:
-  echo "%~dp0dist"
+  echo "%~dp0..\dist"
 ) else (
   echo Build failed. See the error above.
 )

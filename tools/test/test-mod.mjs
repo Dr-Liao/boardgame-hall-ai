@@ -11,7 +11,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-const projectRoot = fileURLToPath(new URL('..', import.meta.url))
+const projectRoot = fileURLToPath(new URL('../..', import.meta.url))
 const [id, requested = 'test', ...rest] = process.argv.slice(2)
 const games = fs.readdirSync(path.join(projectRoot, 'games'), { withFileTypes: true })
   .filter(entry => entry.isDirectory() && fs.existsSync(path.join(projectRoot, 'games', entry.name, 'package.json')))

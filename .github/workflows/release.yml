@@ -49,7 +49,7 @@ jobs:
         with:
           node-version: 22
       - name: Build hall-only portable packages
-        run: node tools/build-macos.mjs --arch=all --hall-only
+        run: node tools/build/build-macos.mjs --arch=all --hall-only
       - name: Split update packages
         run: node tools/release/pack-update.mjs dist/BoardgameHall-Lite-macOS-*/ --out=dist/release
       - uses: actions/upload-artifact@v4

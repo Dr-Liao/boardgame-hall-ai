@@ -97,6 +97,6 @@ node tools/build-presentation.mjs --write        # 展示资源报告里的资�
 ## 浏览器回归
 
 大厅与 Arkham 的 Playwright 配置都用 `channel: 'msedge'`，即复用系统 Edge，**不下载** Playwright 内核，
-所以不需要 `npx playwright install`。`tools/require-playwright-browsers.mjs` 挂在大厅 `test:hall:browser` 与
+所以不需要 `npx playwright install`。`tools/test/require-playwright-browsers.mjs` 挂在大厅 `test:hall:browser` 与
 诡镇 `test:browser` 的 `pre` 钩子上，会先真启动一次浏览器；通道不可用时在跑用例之前就给出可照做的提示，
 而不是等 webServer 起来才抛一屏 stack trace。

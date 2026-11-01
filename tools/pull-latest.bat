@@ -21,7 +21,7 @@ REM 大厅 = 当前仓库；诡镇奇谈 = 克隆在 games/arkhamhorror 的独�
 REM 可选参数 --no-pause：结束时不要暂停，便于被其他脚本调用。
 setlocal
 chcp 65001 >nul
-pushd "%~dp0" || goto directory_error
+pushd "%~dp0.." || goto directory_error
 
 echo ==================================================
 echo   桌游大厅 + 诡镇奇谈 - 一键拉取最新版本
@@ -144,7 +144,7 @@ set "result=1"
 goto finish
 
 :directory_error
-echo [错误] 无法进入脚本所在目录 "%~dp0"。
+echo [错误] 无法进入项目目录 "%~dp0.."。
 pause
 exit /b 1
 

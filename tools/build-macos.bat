@@ -1,18 +1,18 @@
 @echo off
 setlocal
-pushd "%~dp0"
+pushd "%~dp0.."
 if errorlevel 1 goto directory_error
 
-echo Building Boardgame Hall Windows hall-only package...
-echo This package bundles only the games listed in package.json boardgame.liteGames; other games install from the in-app game store.
+echo Building Boardgame Hall macOS packages...
+echo This creates Apple Silicon and Intel packages with bundled Node.js.
 echo.
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\build-windows.ps1" -HallOnly
+node "%~dp0build\build-macos.mjs" --arch=all
 set "build_result=%errorlevel%"
 echo.
 if "%build_result%"=="0" (
   echo Build completed. Output:
-  echo "%~dp0dist"
+  echo "%~dp0..\dist"
 ) else (
   echo Build failed. See the error above.
 )
