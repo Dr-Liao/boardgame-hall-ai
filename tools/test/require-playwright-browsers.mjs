@@ -1,7 +1,7 @@
 // 浏览器回归的前置检查：本仓库的浏览器用例复用系统 Edge（playwright.config.mjs 里 channel: 'msedge'），
 // 不下载 Playwright 内核，所以别提示 npx playwright install。
 // 这里真启动一次再关掉，让「通道不存在 / 被策略禁用」在跑用例之前就暴露，而不是等 webServer 起来才炸。
-const CHANNEL = 'msedge' // 与 tests/hall/playwright.config.mjs、games/arkhamhorror/playwright.config.mjs 保持一致
+const CHANNEL = 'msedge' // 与 tests/hall/playwright.config.mjs、games/arkhamhorror/tests/playwright/playwright.config.mjs 保持一致
 
 let chromium
 try {

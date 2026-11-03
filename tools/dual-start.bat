@@ -20,7 +20,7 @@ exit /b 0
 
 :host
 set "BOARDGAME_PORT=8787"
-set "DSH_HOME=%TEMP%\boardgame-hall-dual\host"
+REM Inherit DSH_HOME so this instance uses the same saves and config as start.bat.
 goto run
 
 :guest
@@ -33,7 +33,11 @@ set "BOARDGAME_HOST=127.0.0.1"
 set "BOARDGAME_RELAY_URL=https://boardgame-relay.onrender.com"
 set "BOARDGAME_NO_OPEN="
 pushd "%~dp0.." || goto directory_error
-echo Player data: %DSH_HOME%
+if /i "%~1"=="--host" (
+  echo Player data: same as start.bat
+) else (
+  echo Player data: %DSH_HOME%
+)
 echo Hall port: %BOARDGAME_PORT%
 node server.js
 set "result=%errorlevel%"
