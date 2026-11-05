@@ -97,3 +97,13 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
         run: node tools/release/r2.mjs release dist/release --dir=hall --tag="$GITHUB_REF_NAME"
+      - name: Prune old releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_KEEP: ${{ vars.RELEASE_KEEP }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        # 新版本已经上传后再删旧包。git tag 保留。RELEASE_KEEP 缺省时脚本按 3 个版本保留。
+        run: node tools/release/prune-releases.mjs --dir=hall --current="$GITHUB_REF_NAME" --repo="$GITHUB_REPOSITORY"

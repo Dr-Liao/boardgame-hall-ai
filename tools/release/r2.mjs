@@ -10,6 +10,10 @@
 //     上传到 <dir>/raw/<branch>/<path>（游戏目录）。
 //   node tools/release/r2.mjs list [--prefix=…]
 //     列出存储桶里的对象，用于核对。
+//   node tools/release/r2.mjs keys --prefix=hall/releases/download/
+//     只打印对象键，供 prune-releases.mjs 判断哪些版本还占着 CDN。
+//   node tools/release/r2.mjs delete-tag --dir=hall --tag=v1.2.0
+//     删除 <dir>/releases/download/<tag>/ 下的对象。不会动 releases/latest/ 和 raw/。
 //
 // 直接调用 R2 的 S3 兼容接口（AWS SigV4 签名），不依赖其他工具。环境变量：
 //   R2_ACCOUNT_ID、R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY（R2「管理 API 令牌」，需要对象读写权限）、R2_BUCKET
@@ -66,11 +70,39 @@ async function upload(file, key, cacheControl) {
   console.log(`已上传 ${key}（${(body.length / 1048576).toFixed(1)} MB）`)
 }
 
-function repoPrefix() {
+function dirPrefix() {
   const dir = option('dir')
   if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(dir || '')) throw new Error('--dir 必须是存储桶里的目录名，如 arkhamhorror')
-  if (!target) throw new Error('缺少目录或文件参数')
   return dir + '/'
+}
+
+function repoPrefix() {
+  const prefix = dirPrefix()
+  if (!target) throw new Error('缺少目录或文件参数')
+  return prefix
+}
+
+function decodeXml(value) {
+  return value.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+}
+
+async function listObjects(prefix) {
+  const items = []
+  let token = ''
+  do {
+    const query = { 'list-type': '2', prefix, 'max-keys': '1000' }
+    if (token) query['continuation-token'] = token
+    const xml = await s3('GET', '', { query })
+    for (const match of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+      const key = match[1].match(/<Key>([^<]*)<\/Key>/)
+      const size = match[1].match(/<Size>(\d+)<\/Size>/)
+      if (key) items.push({ key: decodeXml(key[1]), size: Number(size?.[1] || 0) })
+    }
+    const next = xml.match(/<NextContinuationToken>([^<]*)<\/NextContinuationToken>/)
+    if (xml.includes('<IsTruncated>true') && !next) throw new Error('R2 列出对象被截断，但没有 continuation-token')
+    token = xml.includes('<IsTruncated>true') && next ? decodeXml(next[1]) : ''
+  } while (token)
+  return items
 }
 
 async function release() {
@@ -92,13 +124,45 @@ async function file() {
 }
 
 async function list() {
-  const xml = await s3('GET', '', { query: { 'list-type': '2', prefix: option('prefix') || '' } })
-  const items = [...xml.matchAll(/<Key>([^<]*)<\/Key>[\s\S]*?<Size>(\d+)<\/Size>/g)]
-  for (const [, key, size] of items) console.log(`${(Number(size) / 1048576).toFixed(1).padStart(8)} MB  ${key}`)
-  console.log(`共 ${items.length} 个对象${xml.includes('<IsTruncated>true') ? '（只列出前 1000 个）' : ''}`)
+  const items = await listObjects(option('prefix') || '')
+  for (const item of items) console.log(`${(item.size / 1048576).toFixed(1).padStart(8)} MB  ${item.key}`)
+  console.log(`共 ${items.length} 个对象`)
+}
+
+async function keys() {
+  const prefix = option('prefix') || ''
+  if (prefix && !/^[A-Za-z0-9._/-]+$/.test(prefix)) throw new Error('无效的 --prefix')
+  for (const item of await listObjects(prefix)) console.log(item.key)
+}
+
+async function deleteTag() {
+  const tag = option('tag')
+  if (!tag || !/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error('缺少或无效的 --tag，只删除 vX.Y.Z')
+  const objectPrefix = `${dirPrefix()}releases/download/${tag}/`
+  const items = await listObjects(objectPrefix)
+  if (!items.length) {
+    console.log(`R2 上没有 ${objectPrefix}`)
+    return
+  }
+  for (const item of items) {
+    const rest = item.key.slice(objectPrefix.length)
+    if (!item.key.startsWith(objectPrefix) || rest.split('/').includes('..')) throw new Error('拒绝删除前缀之外的对象：' + item.key)
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await s3('DELETE', item.key)
+        break
+      } catch (error) {
+        if (attempt >= 3) throw error
+        console.warn(`删除 ${item.key} 失败（${error.cause?.code || error.message}），第 ${attempt + 1} 次重试`)
+      }
+    }
+    console.log(`已删除 ${item.key}（${(item.size / 1048576).toFixed(1)} MB）`)
+  }
 }
 
 if (command === 'release') await release()
 else if (command === 'file') await file()
 else if (command === 'list') await list()
-else throw new Error('用法：r2.mjs release <目录> … | file <文件> … | list [--prefix=…]')
+else if (command === 'keys') await keys()
+else if (command === 'delete-tag') await deleteTag()
+else throw new Error('用法：r2.mjs release <目录> … | file <文件> … | list [--prefix=…] | keys --prefix=… | delete-tag --dir=… --tag=vX.Y.Z')

@@ -84,6 +84,8 @@ GitHub
       ```
 
       之后每次发版，workflow 会在 GitHub Release 之后用 `tools/release/r2.mjs` 把附件上传到 R2（清单最后上传，并另存一份到 `releases/latest/download/`）。`registry/index.json` 推送到 `main` 时由 `sync-r2.yml` 同步到 R2。带版本号的文件缓存一年，清单和游戏目录缓存 5 分钟。
+
+      上传成功后，`tools/release/prune-releases.mjs` 只保留最近 3 个 `vX.Y.Z`（两个仓库都可以用变量 `RELEASE_KEEP` 修改，至少为 1）。更早的 GitHub Release 附件，以及 R2 上对应的 `releases/download/<tag>/`，会删掉。`releases/latest/`、游戏目录和 git tag 都保留：tag 几乎不占空间，也避免版本号被重复使用。玩家只拉最新清单；清单缓存 5 分钟，默认留 3 个版本，是为了这段时间内已经开始的下载还能下完。设成 1 时，上一版的下载会立刻失效。
    3. 告诉大厅各仓库的 CDN 目录地址（以 `https://` 开头、以 `/` 结尾）：根 `package.json` 的 `boardgame.cdn` 用于大厅自身和游戏目录，`registry/index.json` 里每个游戏加 `cdn` 字段：
 
       ```json
@@ -112,7 +114,8 @@ GitHub
    - 编译 Windows 启动器；配置了 `BOARDGAME_SIGN_THUMBPRINT` / `BOARDGAME_SIGN_PFX` / `BOARDGAME_SIGN_COMMAND` 时会给 `桌游大厅.exe` 做代码签名（见 [Windows 的「未知发布者」提示](windows-signing.md)）；
    - 用 `tools/release/pack-update.mjs` 拆出程序包和各平台运行时包。程序包也来自纯大厅版，只有几百 KB；
    - 用 `tools/release/make-manifest.mjs` 生成并签名 `update-manifest.json`；
-   - 发布 GitHub Release。
+   - 发布 GitHub Release，并把附件同步到 R2；
+   - 用 `tools/release/prune-releases.mjs` 删除超出 `RELEASE_KEEP` 的旧 Release 和 CDN 文件。git tag 保留。
 
 发布的文件：
 
@@ -175,7 +178,7 @@ GitHub
 - 不要把语言包放到 `games/<id>/locales/` 或仓库根目录，否则 `/mods/<id>/` 挂载与本文件的 `exclude` 规则都要改。
 - 目录/开局表单的元数据翻译写在 `index.js` 的 `i18n.messages` 里，和界面语言包分开维护；没有前端语言包的语言也可以先只声明 `messages`（此时游戏界面仍是默认语言，见 [本地化方案](localization.md) 的「Mod 契约」一节）。
 
-发布方式和大厅一样（打 tag 触发 CI）。诡镇仓库克隆在 `games/arkhamhorror` 时，可运行其中的 `release.bat`：它会检查**诡镇仓库**工作区干净且与自己的 `origin/main` 同步，只更新该仓库的 `package.json` 和 `boardgame-mod.json`，提交、打 tag 并推送，不改大厅版本。也可以手动修改 `boardgame-mod.json` 的 `version` 后打 tag。诡镇是被大厅忽略的独立 checkout，不是 git submodule；发布游戏后大厅仓库无需提交。诡镇的 `.github/workflows/release.yml` 会签出大厅仓库，调用 `tools/release/pack-mod.mjs` 打包并签名。产物包括 `<id>-<版本>.zip`、增量更新索引 `<id>-<版本>.files.json` 和 `boardgame-mod.release.json`。
+发布方式和大厅一样（打 tag 触发 CI）。诡镇仓库克隆在 `games/arkhamhorror` 时，可运行其中的 `release.bat`：它会检查**诡镇仓库**工作区干净且与自己的 `origin/main` 同步，只更新该仓库的 `package.json` 和 `boardgame-mod.json`，提交、打 tag 并推送，不改大厅版本。也可以手动修改 `boardgame-mod.json` 的 `version` 后打 tag。诡镇是被大厅忽略的独立 checkout，不是 git submodule；发布游戏后大厅仓库无需提交。诡镇的 `.github/workflows/release.yml` 会签出大厅仓库，调用 `tools/release/pack-mod.mjs` 打包并签名。产物包括 `<id>-<版本>.zip`、增量更新索引 `<id>-<版本>.files.json` 和 `boardgame-mod.release.json`。发布成功后同样只保留最近若干个版本，规则与大厅相同。
 
 `hallApi` 高于玩家大厅支持版本的游戏不会被安装，界面会提示「需要先更新大厅」。修改 Mod 接口契约时，先发布支持新 `hallApi` 的大厅，再发布依赖它的游戏。
 
