@@ -44,7 +44,8 @@ Mod 不应假定只有座位 0 是真人。
 - `validateAgentMove`：限制“真人合法、但模型不应代选”的动作；不能代替规则校验。
 - `agentTurnKey`、`agentPlanning`：管理多步回合的上下文边界与 Mod 自有协作计划。
 - `agentActionMessage`、`agentActionSpeechFrequency`、`agentReactionTriggers`：动作后的角色表达，不得修改规则状态。
-- `enableAutoReactionHosted`：大厅启动时启用房主托管策略；不得创建或推进对局。
+- 提供 `autoChoice` 的 Mod 可从 `createState` 第三个参数读取 `autoReactionHosted`，并将策略写入对局状态。大厅恢复旧存档时也会把该值传给迁移钩子。
+- `enableAutoReactionHosted`：旧 Mod 兼容钩子，由大厅启动时调用。
 
 自动选择必须返回与玩家手点相同的普通 move，由大厅重新经过 `validateMove`、`applyMove`、日志和存档流程。
 
