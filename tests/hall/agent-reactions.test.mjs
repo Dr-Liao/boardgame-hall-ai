@@ -12,7 +12,7 @@ const close = server => new Promise(resolve => {
   server.close(resolve)
 })
 
-test('规则事件可触发只读 AI 回应，普通行动发言遵循频率', { timeout: 10000 }, async () => {
+test('单机规则事件的 AI 回应在后台生成，玩家与 AI 都可以继续行动', { timeout: 15000 }, async () => {
   const keys = ['DSH_HOME', 'AI_API_KEY', 'AI_BASE_URL', 'AI_MAX_RETRIES', 'AI_TIMEOUT_MS']
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]))
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hall-agent-reactions-'))
@@ -22,13 +22,19 @@ test('规则事件可触发只读 AI 回应，普通行动发言遵循频率', {
   process.env.AI_TIMEOUT_MS = '3000'
 
   const requests = []
+  const reactionStarted = Promise.withResolvers()
+  const reactionReply = Promise.withResolvers()
   const model = http.createServer((req, res) => {
     let body = ''
     req.on('data', chunk => { body += chunk })
-    req.on('end', () => {
+    req.on('end', async () => {
       const payload = JSON.parse(body)
       requests.push(payload)
       const reaction = payload.messages[0].content.includes('【回应边界】')
+      if (reaction) {
+        reactionStarted.resolve(payload)
+        await reactionReply.promise
+      }
       const content = reaction
         ? JSON.stringify({ reply: '这次检定成功，局面稳住了。' })
         : JSON.stringify({ move: { action: 'aiMove' }, speech: '这句日常台词不应显示。' })
@@ -54,8 +60,8 @@ test('规则事件可触发只读 AI 回应，普通行动发言遵循频率', {
     ),
     applyMove(state, seat) {
       state.moveCount++
-      state.currentSeat = seat === 0 ? 1 : 0
-      return seat === 0
+      state.currentSeat = state.moveCount === 2 ? 1 : 0
+      return state.moveCount === 1
         ? [{ type: 'presentation', kind: 'test', seat: 0, name: '玩家', success: true }]
         : []
     },
@@ -78,6 +84,7 @@ test('规则事件可触发只读 AI 回应，普通行动发言遵循频率', {
     const post = async (url, body) => {
       const response = await fetch(base + url, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        signal: AbortSignal.timeout(2500),
       })
       const data = await response.json()
       assert.equal(response.status, 200, data.error)
@@ -90,17 +97,38 @@ test('规则事件可触发只读 AI 回应，普通行动发言遵循频率', {
     session = (await post('/api/move', {
       sessionId: session.sessionId, revision: session.state.revision, move: { action: 'humanMove' },
     })).session
+    const reaction = await reactionStarted.promise
+    assert.ok(reaction.messages[1].content.includes('AI 自身的检定成功'))
+    assert.equal(session.pendingReactions, true)
+    assert.equal(session.state.revision, 1)
+
+    session = (await post('/api/move', {
+      sessionId: session.sessionId, revision: session.state.revision, move: { action: 'humanMove' },
+    })).session
+    assert.equal(session.state.revision, 3, '等待点评时，真人和 AI 的操作均已提交')
+    assert.equal(session.events.some(event => event.origin === 'reaction'), false)
+    reactionReply.resolve()
+
+    for (let attempt = 0; attempt < 50 && session.pendingReactions; attempt++) {
+      const response = await fetch(base + '/api/session?sessionId=' + session.sessionId)
+      const result = await response.json()
+      assert.equal(result.busy, false)
+      session = result.session
+      if (session.pendingReactions) await new Promise(resolve => setTimeout(resolve, 20))
+    }
 
     assert.equal(requests.length, 2, '一次事件回应加一次 AI 行动')
-    assert.ok(requests[0].messages[0].content.includes('【回应边界】'))
-    assert.ok(requests[0].messages[1].content.includes('AI 自身的检定成功'))
+    assert.equal(session.pendingReactions, false)
+    assert.equal(session.state.revision, 3)
     assert.equal(session.events.filter(event => event.origin === 'reaction').length, 1)
     assert.equal(session.events.find(event => event.origin === 'reaction').text, '这次检定成功，局面稳住了。')
     assert.equal(session.events.find(event => event.origin === 'reaction').seat, 1, '自身 100%，其他角色 0%')
+    assert.equal(session.events.find(event => event.origin === 'reaction').revision, 1)
     assert.equal(session.events.filter(event => event.origin === 'action').length, 0)
     assert.equal(session.events.filter(event => event.type === 'speech').length, 0)
     assert.equal(session.state.currentSeat, 0)
   } finally {
+    reactionReply.resolve()
     if (hall) await close(hall)
     await close(model)
     for (const key of keys) {

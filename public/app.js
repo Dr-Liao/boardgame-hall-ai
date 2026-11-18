@@ -734,6 +734,12 @@ function renderNow(options = {}) {
   }
   heldRenderPending = false
   onlineUi.applyPending()
+  if (!state.busy && deferredChatSession) {
+    const next = deferredChatSession
+    deferredChatSession = null
+    applyChatSession(next)
+  }
+  startChatPoll()
   const active = document.activeElement
   const label = active?.getAttribute('aria-label')
   const interactionKey = active?.dataset?.interaction
@@ -776,7 +782,7 @@ function renderApp() {
       consoleEl.append(h('div', { className: 'bg-game-actions', role: 'status' },
         t('game.autoRetry', { attempt: retry.attempt, max: retry.maxAttempts })))
     }
-    if (!state.busy && !state.online?.busy && (!s.online || s.mySeat === 0) && !state.chat.pendings.length && s.state.status === 'playing' && s.players[seat]?.role === 'ai') {
+    if (!state.busy && !state.online?.busy && (!s.online || s.mySeat === 0) && s.state.status === 'playing' && s.players[seat]?.role === 'ai') {
       consoleEl.append(h('div', { className: 'bg-game-actions', role: 'status' },
         h('span', null, t('game.aiWaiting')),
         h('button', { className: 'bg-btn secondary', onclick: retryAi }, t('game.continueAi'))))
@@ -1882,7 +1888,7 @@ async function move(x, y) {
 
 async function retryAi() {
   const session = state.session
-  if (!session || state.busy || state.chat.pendings.length) return
+  if (!session || state.busy || state.online?.busy) return
   state.busy = true
   state.error = null
   state.movePending = { sessionId: session.sessionId, action: 'aiRetry' }
@@ -2283,45 +2289,47 @@ function renderChatCompose(session) {
   )
 }
 
-/** 用服务端返回的会话替换本地视图，并撤掉已经落库的本地占位发言。 */
+let deferredChatSession = null
+
+/** 应用发言更新时保留已到达的更新版本，并撤掉已落库的占位发言。 */
 function applyChatSession(next) {
+  const current = state.session
+  if (next.sessionId !== current?.sessionId) return false
+  const atLeastAsRecent = (value, baseline) => value.state.revision > baseline.state.revision ||
+    (value.state.revision === baseline.state.revision && value.events.length >= baseline.events.length)
+  if (!atLeastAsRecent(next, current)) return false
+  if (state.busy) {
+    if (deferredChatSession?.sessionId !== next.sessionId || atLeastAsRecent(next, deferredChatSession)) deferredChatSession = next
+    return false
+  }
+  const changed = next.state.revision !== current.state.revision || next.events.length !== current.events.length ||
+    next.pendingReactions !== current.pendingReactions
   state.session = next
   const mine = (next.events || []).filter((event) => event.type === 'chat' && event.seat === (next.mySeat ?? 0))
   state.chat.pendings = state.chat.pendings.filter((pending) => !mine.some((event) =>
     Number(event.seq) >= (pending.sinceSeq ?? 0) && chatMessageKey(event) === chatMessageKey(pending)))
+  return changed
 }
 
 let chatPollTimer = null
+let chatPollInFlight = false
 
-function stopChatPoll() {
-  if (chatPollTimer) { clearTimeout(chatPollTimer); chatPollTimer = null }
-}
-
-/** 回复可能分多条到达（@全体），轮询会话让它们逐条出现，而不是等最后一个字回来。 */
-function startChatPoll(sessionId) {
-  if (chatPollTimer) return
-  const tick = async () => {
+/** 单机通过轮询接收后台发言，联机通过房间快照接收。 */
+function startChatPoll() {
+  const hasPendingSpeech = session => session && !session.online && (session.pendingReactions || state.chat.pendings.length)
+  if (chatPollTimer || chatPollInFlight || !hasPendingSpeech(state.session)) return
+  chatPollTimer = setTimeout(async () => {
     chatPollTimer = null
     const session = state.session
-    if (!session || session.sessionId !== sessionId) return
-    if (!state.chat.pendings.length) return
-    if (session.online || state.busy) { chatPollTimer = setTimeout(tick, 1200); return }
+    if (!hasPendingSpeech(session)) return
+    if (state.busy) { startChatPoll(); return }
+    chatPollInFlight = true
     try {
-      const result = await api('GET', '/session?sessionId=' + encodeURIComponent(sessionId))
-      if (state.session?.sessionId === sessionId && result.session) {
-        const current = state.session
-        const next = result.session
-        const grew = (next.events || []).length > (current.events || []).length
-        const newer = (next.state?.revision ?? 0) > (current.state?.revision ?? 0)
-        if (grew || newer) {
-          applyChatSession(next)
-          render()
-        }
-      }
-    } catch { /* 轮询失败不影响最终响应 */ }
-    if (state.chat.pendings.length) chatPollTimer = setTimeout(tick, 1200)
-  }
-  chatPollTimer = setTimeout(tick, 500)
+      const result = await api('GET', '/session?sessionId=' + encodeURIComponent(session.sessionId))
+      if (result.session && applyChatSession(result.session)) render()
+    } catch { /* 临时断开后继续轮询。 */ }
+    finally { chatPollInFlight = false; startChatPoll() }
+  }, 750)
 }
 
 let chatSendToken = 0
@@ -2345,7 +2353,6 @@ async function sendChat() {
   state.chat.error = null
   state.chat.notice = null
   render()
-  startChatPoll(session.sessionId)
   try {
     const result = await api('POST', '/chat', { sessionId: session.sessionId, text, to })
     if (state.session?.sessionId === session.sessionId && result.session) applyChatSession(result.session)
@@ -2374,7 +2381,6 @@ async function sendChat() {
     if (!state.chat.draft) state.chat.draft = text // 失败保留输入，方便重试
   } finally {
     state.chat.pendings = state.chat.pendings.filter((item) => item.token !== pending.token)
-    if (!state.chat.pendings.length) stopChatPoll()
     render()
   }
 }

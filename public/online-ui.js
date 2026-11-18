@@ -87,8 +87,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       // P1.4：应用会话前先 hydrate 公共静态表；本地没有匹配版本时保留当前完整视图，
       // 等大厅在后续响应里补发 static（失败模式只会是「慢一拍」，不会把精简会话当完整视图渲染）。
       const nextSession = value.session ? (hydrate ? hydrate(value.session) : value.session) : null
-      // 强制同步（用户手动恢复）时不受本地忙碌/聊天在途影响，直接应用权威视图。
-      const canApplySession = forceApply || (!state.busy && !(state.chat.pendings || []).length)
+      const canApplySession = forceApply || !state.busy
       if (sessionOmitted) {
         changed ||= appliedSerial !== value.serial
         // 忙碌期间收到、还没应用的视图：忙碌结束后即使 serial 没变也要补应用
@@ -269,7 +268,7 @@ export function createOnlineUI({ h, state, render, renderChrome = render, reques
       // P2.2：AI 回合在后台继续（aiPending）时，命令响应会先回来；这里立刻把「忙碌 + AI 思考中」
       // 写进本地联机状态，避免 start/aiRetry 随后的 long-poll 刷新把等待窗口拖长，
       // 同时让 Mod UI（看 state.online.busy / aiPending）在 state.busy 被清掉后仍然禁用行动入口。
-      if (result && (result.aiPending === true || result.busy === true)) {
+      if (action !== 'chat' && result && (result.aiPending === true || result.busy === true)) {
         state.online = { ...(state.online || {}), busy: true, aiPending: result.aiPending === true }
         renderChrome()
       }

@@ -42,9 +42,10 @@ test('online snapshots deferred during a move redraw afterward; late polling res
   await poll()
   assert.equal(state.session.state.revision, 1)
   state.busy = false; state.session = snapshot(2).session
+  state.chat.pendings = [{ text: 'Waiting for an AI reply' }]
   const before = renders
   await poll()
-  assert.equal(state.session.state.revision, 3)
+  assert.equal(state.session.state.revision, 3, 'a pending chat reply does not delay the game snapshot')
   assert.equal(renders, before + 1, 'the deferred update must redraw even though its serial was seen while busy')
   value = snapshot(2)
   await poll()

@@ -657,6 +657,64 @@ test('guest 大厅经快照/status 感知 aiPending；AI 思考期间客人可�
 // ---------------------------------------------------------------------------
 // 8. 客户端 banner：aiPending 时显示「AI 思考中…」
 // ---------------------------------------------------------------------------
+test('联机客人能在桌聊回复和规则点评生成期间提交行动', { timeout: 15000 }, async t => {
+  isolateEnv(t)
+  const model = startModel()
+  process.env.AI_BASE_URL = await model.listen()
+  process.env.AI_API_KEY = 'stub-key'
+  process.env.AI_TIMEOUT_MS = '6000'
+  process.env.AI_MAX_RETRIES = '1'
+  const releaseSpeech = Promise.withResolvers()
+  t.after(async () => { releaseSpeech.resolve(); await model.close() })
+  model.state.behavior = async payload => {
+    await releaseSpeech.promise
+    return { content: isChatPrompt(payload) ? MODEL_CHAT : JSON.stringify({ reply: '刚才的检定成功了。' }) }
+  }
+  const mod = aiBackgroundMod()
+  mod.applyMove = (state, seat) => {
+    state.currentSeat = 2
+    state.done++
+    return [{ type: 'move', seat }]
+  }
+  mod.agentReactionTriggers = ({ revision }) => revision === 1
+    ? [{ key: 'reaction-1', kind: 'test.result', frequency: 100 }]
+    : []
+  const { halls: [host, guest], relayUrl } = await fixture(t, { mods: [mod], count: 2 })
+  await createAiRoom([host], relayUrl, { mod, capacity: 3, fillAi: false, aiSeats: [{ seat: 1, aiId: 'ai-hu' }] })
+  const joined = await guest.call('join', { relayUrl, code: (await host.call('status')).room.code })
+  assert.equal(joined.ok, true, joined.error)
+  await guest.call('ready', { ready: true })
+  const started = await host.command('start')
+  assert.equal(started.ok, true, started.error)
+
+  const chat = guest.command('chat', { text: '下一步怎么办？' })
+  await waitFor(() => model.state.calls === 1, 3000, '桌聊模型请求')
+  const first = await host.command('move', { revision: 0, move: { action: 'step' } })
+  assert.equal(first.ok, true, first.error)
+  assert.notEqual(first.aiPending, true)
+  await waitFor(() => model.state.calls === 2, 3000, '点评模型请求')
+  const ready = await waitFor(async () => {
+    const status = await guest.call('status')
+    return status.session?.state.revision === 1 ? status : null
+  }, 3000, '客人收到行动权')
+  assert.equal(ready.busy, false)
+  assert.equal(ready.aiPending, false)
+  const next = await guest.command('move', { revision: 1, move: { action: 'step' } })
+  assert.equal(next.ok, true, next.error)
+  assert.equal(next.session.state.revision, 2)
+  assert.equal(next.session.events.filter(event => event.seat === 1 && event.type === 'chat').length, 0)
+
+  releaseSpeech.resolve()
+  assert.equal((await chat).ok, true)
+  const finished = await waitFor(async () => {
+    const status = await guest.call('status')
+    return status.session?.events.some(event => event.origin === 'reaction') ? status : null
+  }, 3000, '客人收到后台点评')
+  assert.equal(finished.busy, false)
+  assert.equal(finished.session.state.revision, 2)
+  assert.equal(finished.session.events.filter(event => event.origin === 'reaction').length, 1)
+})
+
 test('联机 banner 在 aiPending 时显示「AI 思考中…」，否则退回「正在处理行动…」', async t => {
   const oldStorage = globalThis.localStorage
   globalThis.localStorage = { getItem: () => '', setItem() {} }
