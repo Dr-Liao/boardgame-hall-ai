@@ -6,7 +6,7 @@ import { chatCompletionContext, chatFilterOptions, chatMessageKey } from './chat
 import { createOnlineUI } from './online-ui.js'
 import { createUpdatesUI } from './updates-ui.js'
 import { createFeedbackUI } from './feedback-ui.js'
-import { applyStatusDelta, statusStampOf } from './online-delta.js'
+import { applyLocalActionDelta, applyStatusDelta, statusStampOf } from './online-delta.js'
 import { getLocale, hasKey, setLocale, t } from './i18n.js'
 
 const root = document.getElementById('app')
@@ -168,6 +168,17 @@ async function api(method, pathname, body) {
     }
     if (method === 'POST' && actions[pathname]) return onlineUi.command(actions[pathname], body)
     if (pathname.startsWith('/notes/') || pathname.startsWith('/session/')) throw new Error(t('error.hostManaged'))
+  }
+  const base = state.session
+  if (method === 'POST' && pathname === '/move' && body?.sessionId === base?.sessionId && base?.localActionStamp) {
+    const result = await rawApi(method, pathname, { ...body,
+      client: { ...body.client, localBaseStamp: base.localActionStamp },
+    })
+    if (!result.localActionDelta) return result
+    const session = state.session?.localActionStamp === base.localActionStamp
+      ? applyLocalActionDelta(base, result.localActionDelta) : null
+    // 行动已提交。无法还原增量时只拉全量视图，不重发行动。
+    return session ? { ...result, session } : rawApi('GET', '/session?sessionId=' + encodeURIComponent(base.sessionId))
   }
   return rawApi(method, pathname, body)
 }

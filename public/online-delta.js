@@ -21,26 +21,47 @@ export function statusStampOf(session) {
  * 与 lib/online-sync.js 的 applySnapshotChanges 同语义（浏览器不能 import lib/，这里保留一份），
  * 额外校验 changes 形状；任何非法路径/数组操作直接抛错，由调用方回退全量。
  */
-export function applySnapshotChanges(before, changes) {
+export function applySnapshotChanges(before, changes, { shareUnchanged = false } = {}) {
   if (!Array.isArray(changes)) throw new Error('同步增量无效')
-  let result = structuredClone(before)
+  const writable = shareUnchanged ? new WeakSet() : null
+  const copy = value => {
+    if (!writable || !object(value) || writable.has(value)) return value
+    const next = Array.isArray(value) ? value.slice() : { ...value }
+    writable.add(next)
+    return next
+  }
+  let result = shareUnchanged ? copy(before) : structuredClone(before)
   for (const change of changes) {
     if (!change || !Array.isArray(change.path)) throw new Error('同步路径无效')
     if (change.path.some(key => ['__proto__', 'constructor', 'prototype'].includes(key))) throw new Error('同步路径无效')
     let parent = result
-    for (const key of change.path.slice(0, -1)) parent = parent[key]
+    for (const key of change.path.slice(0, -1)) {
+      if (shareUnchanged) parent[key] = copy(parent[key])
+      parent = parent[key]
+    }
     const key = change.path.at(-1)
     if (change.splice !== undefined) {
+      if (shareUnchanged && change.path.length) parent[key] = copy(parent[key])
+      else if (shareUnchanged) result = copy(result)
       const target = change.path.length ? parent[key] : result
       if (!Array.isArray(target) || !Number.isInteger(change.splice) || change.splice < 0 || change.splice > target.length) {
         throw new Error('同步数组无效')
       }
       target.splice(change.splice, target.length - change.splice, ...(Array.isArray(change.items) ? change.items : []))
-    } else if (!change.path.length) result = change.value
+    } else if (!change.path.length) result = copy(change.value)
     else if (change.remove) delete parent[key]
     else parent[key] = change.value
   }
   return result
+}
+
+export function applyLocalActionDelta(previous, delta) {
+  if (!previous || !delta || delta.baseStamp !== previous.localActionStamp) return null
+  try {
+    const session = applySnapshotChanges(previous, delta.changes, { shareUnchanged: true })
+    return session.sessionId === previous.sessionId && session.localActionStamp === delta.stamp
+      && session.state?.revision === delta.revision && delta.revision > previous.state.revision ? session : null
+  } catch { return null }
 }
 
 /**
